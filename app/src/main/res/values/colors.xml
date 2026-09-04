@@ -1,0 +1,12 @@
+<resources>
+    <color name="bg">#0E151B</color>
+    <color name="panel">#172129</color>
+    <color name="panel_alt">#1D2A33</color>
+    <color name="line">#30404A</color>
+    <color name="text">#EDF4F3</color>
+    <color name="muted">#8FA0AA</color>
+    <color name="teal">#4CE0CA</color>
+    <color name="teal_dark">#102321</color>
+    <color name="gold">#FFCC70</color>
+    <color name="red">#FF7D80</color>
+</resources>
