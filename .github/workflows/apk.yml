@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   apk:
@@ -51,3 +51,14 @@ jobs:
           name: relayscope-apk
           path: app/build/outputs/apk/release/relayscope-release.apk
           if-no-files-found: error
+      - name: Publish GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="build-${GITHUB_RUN_NUMBER}"
+          gh release create "${TAG}" \
+            app/build/outputs/apk/release/relayscope-release.apk \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "RelayScope ${TAG}" \
+            --notes "云端构建 APK。此版本使用 CI 临时签名，仅用于首次安装验证。"
