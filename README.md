@@ -24,6 +24,14 @@ OCR behavior is deliberately conservative: the image is processed on-device with
 
 ## Build
 
-The supported build route is GitHub Actions. Push this repository to GitHub and the workflow in `.github/workflows/apk.yml` produces a real release APK as an artifact.
+The supported build route is GitHub Actions. The ordinary Android build checklist is:
 
-The API key remains in app-private Android Keystore-backed storage. It is never part of the repository or workflow.
+`/workspace/docs/ANDROID-APP-GITHUB-ACTIONS-BUILD.md`
+
+Push this repository to GitHub and `.github/workflows/apk.yml` installs Android SDK 35, runs `assembleRelease`, signs the unsigned APK, verifies it, uploads an artifact, and publishes a GitHub Release asset.
+
+The first `build-4` package was a validation build with a CI temporary signing key. A production release must replace this with a fixed keystore stored in GitHub Secrets so later APKs can upgrade the installed package without uninstalling it.
+
+## Security and runtime limitations
+
+API keys remain in app-private Android Keystore-backed storage. They are never part of the repository or workflow. The foreground inspection service needs an ongoing notification and can still be delayed or stopped by Android/vendor power management; a user-selected interval is a scheduling target, not an absolute OS guarantee.
