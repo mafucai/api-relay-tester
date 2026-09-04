@@ -26,9 +26,28 @@ jobs:
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - name: Build release APK
         run: ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
+      - name: Sign release APK
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: |
+          set -euo pipefail
+          SDK_BUILD_TOOLS="${ANDROID_HOME}/build-tools/35.0.0"
+          keytool -genkeypair -v \
+            -keystore release-ci.jks -storepass relayscope-ci \
+            -alias relayscope -keypass relayscope-ci \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=RelayScope CI, OU=Build, O=RelayScope, C=CN"
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          SIGNED="app/build/outputs/apk/release/relayscope-release.apk"
+          test -f "${UNSIGNED}"
+          "${SDK_BUILD_TOOLS}/apksigner" sign \
+            --ks release-ci.jks --ks-pass pass:relayscope-ci \
+            --key-pass pass:relayscope-ci --out "${SIGNED}" "${UNSIGNED}"
+          "${SDK_BUILD_TOOLS}/apksigner" verify "${SIGNED}"
+          rm -f release-ci.jks
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: relayscope-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          path: app/build/outputs/apk/release/relayscope-release.apk
           if-no-files-found: error
