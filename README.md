@@ -4,7 +4,7 @@ Android app for comparing OpenAI-compatible API relay stations.
 
 ## Current milestone
 
-The native front-end shell mirrors the approved browser prototype:
+The approved browser front-end is the single source of truth for the Android UI. The production APK must load the same HTML/CSS/JS from `app/src/main/assets/` in a WebView; native Java is reserved for the bridge and Android-only capabilities.
 
 - overview ranking
 - model availability matrix
@@ -16,7 +16,7 @@ The native front-end shell mirrors the approved browser prototype:
 - manual price storage (input/output price + balance multiplier)
 - configurable foreground inspection service; the interval accepts positive decimals
 
-The app now has a real network probe for saved sites: `/v1/models`, TTFB, per-model minimal streaming checks, error classification, and bounded retry. The overview and matrix show the latest real results for user-saved sites; the three sample cards remain demo data for visual comparison.
+The app now has a real network probe for saved sites: `/v1/models`, TTFB, per-model minimal streaming checks, error classification, and bounded retry. Production UI must show real saved-site results or an empty state; the three sample cards belong only to the browser prototype/development fixtures and must not be shipped as production data.
 
 The app also includes a conservative JSON price-source adapter and a foreground inspection service. The service uses the user-selected interval (including decimals) rather than WorkManager's 15-minute floor, restarts when the interval changes, and shows an ongoing Android notification while active. Incomplete price-source rows never overwrite saved prices; configured price sources receive the site's bearer key when required.
 
