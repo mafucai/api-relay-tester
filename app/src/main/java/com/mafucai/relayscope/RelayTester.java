@@ -89,7 +89,10 @@ public final class RelayTester {
         try {
             int code = connection.getResponseCode(); String body = readBody(connection, code);
             if (code < 200 || code >= 300) throw classify(code, body);
-            JSONArray data = new JSONObject(body).optJSONArray("data"); List<String> models = new ArrayList<>();
+            JSONArray data;
+            try { data = new JSONObject(body).optJSONArray("data"); }
+            catch (JSONException je) { throw new TestException("响应不是 JSON", "接口返回了网页而非 JSON（可能地址填错、被网关/人机验证拦截），请检查模型接口地址"); }
+            List<String> models = new ArrayList<>();
             if (data != null) for (int i=0;i<data.length();i++) { String id=data.optJSONObject(i).optString("id"); if (!id.isEmpty()) models.add(id); }
             return new ModelsResponse(models, (System.nanoTime()-start)/1_000_000);
         } finally { connection.disconnect(); }
