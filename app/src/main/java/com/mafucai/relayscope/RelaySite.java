@@ -24,12 +24,23 @@ public final class RelaySite {
         return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
+    /** One API 哲学：地址用户填什么就用什么，不猜测拼接。 */
     public String modelsUrl() {
-        return baseUrl.endsWith("/v1") ? baseUrl + "/models" : baseUrl + "/v1/models";
+        return joinUrl("/models");
     }
 
     public String chatUrl() {
-        return baseUrl.endsWith("/v1") ? baseUrl + "/chat/completions" : baseUrl + "/v1/chat/completions";
+        return joinUrl("/chat/completions");
+    }
+
+    private String joinUrl(String path) {
+        String base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        return base + (path.startsWith("/") ? path : "/" + path);
+    }
+
+    /** 地址是否以 /v1 结尾，用于结果页提示（不再自动改写地址）。 */
+    public boolean looksLikeMissingV1() {
+        return !baseUrl.endsWith("/v1");
     }
 
     public JSONObject toJson() throws JSONException {

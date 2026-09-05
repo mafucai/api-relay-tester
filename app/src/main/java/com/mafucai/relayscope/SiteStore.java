@@ -40,6 +40,19 @@ public final class SiteStore {
         return true;
     }
 
+    /** 按名称删除站点。返回是否删除了至少一条。 */
+    public boolean removeByName(String name) {
+        List<RelaySite> sites = load();
+        List<RelaySite> kept = new java.util.ArrayList<>();
+        boolean changed = false;
+        for (RelaySite s : sites) {
+            if (s.name.equals(name)) { changed = true; continue; }
+            kept.add(s);
+        }
+        if (changed) save(kept);
+        return changed;
+    }
+
     private void save(List<RelaySite> sites) {
         JSONArray array = new JSONArray();
         try {

@@ -79,6 +79,12 @@ public final class MainActivity extends Activity {
             toast("站点已安全保存，点击开始全站测试");
         }
 
+        @JavascriptInterface public void removeSite(String name) {
+            boolean removed = siteStore.removeByName(name);
+            if (removed) { results.remove(name); pushState(); toast("已删除：" + name); }
+            else toast("未找到站点：" + name);
+        }
+
         @JavascriptInterface public void syncState() {
             pushState();
         }

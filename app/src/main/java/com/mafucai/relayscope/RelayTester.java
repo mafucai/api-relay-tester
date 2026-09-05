@@ -118,11 +118,25 @@ public final class RelayTester {
         finally { connection.disconnect(); }
     }
 
+    private static final String BROWSER_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
     private HttpURLConnection open(String address, String key, String method) throws Exception {
-        HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection(); c.setRequestMethod(method); c.setConnectTimeout(CONNECT_TIMEOUT); c.setReadTimeout(READ_TIMEOUT); c.setRequestProperty("Accept","application/json"); if(key!=null&&!key.isEmpty())c.setRequestProperty("Authorization","Bearer "+key); return c;
+        HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection(); c.setRequestMethod(method); c.setConnectTimeout(CONNECT_TIMEOUT); c.setReadTimeout(READ_TIMEOUT); c.setRequestProperty("Accept","application/json"); c.setRequestProperty("User-Agent", BROWSER_UA); if(key!=null&&!key.isEmpty())c.setRequestProperty("Authorization","Bearer "+key); return c;
     }
     private String readBody(HttpURLConnection c,int code)throws IOException{InputStream in=code>=400?c.getErrorStream():c.getInputStream();if(in==null)return "";try(BufferedReader r=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8))){StringBuilder b=new StringBuilder();String line;while((line=r.readLine())!=null&&b.length()<12000)b.append(line);return b.toString();}}
-    private TestException classify(int code,String body){if(code==401||code==403)return new TestException("认证失败", "HTTP "+code+"：密钥无效或无权限");if(code==404)return new TestException("接口/模型不存在", "HTTP 404：请检查地址或模型");if(code==429)return new TestException("限流", "HTTP 429：请求过于频繁");if(code>=500)return new TestException("服务端错误", "HTTP "+code);return new TestException("请求失败", "HTTP "+code);}
+    private TestException classify(int code,String body){
+        if(code==401||code==403){
+            String detail="HTTP "+code+"：密钥无效或无权限";
+            // One API 式：错误 body 是 JSON 时透传站点原始 message，让用户看到真实原因
+            try { JSONObject o=new JSONObject(body); String m=o.optString("message","").trim(); if(!m.isEmpty()) detail="HTTP "+code+"：站点返回——"+m; }
+            catch (JSONException ignored) { }
+            return new TestException("认证失败", detail);
+        }
+        if(code==404)return new TestException("接口/模型不存在", "HTTP 404：请检查地址或模型");
+        if(code==429)return new TestException("限流", "HTTP 429：请求过于频繁");
+        if(code>=500)return new TestException("服务端错误", "HTTP "+code);
+        return new TestException("请求失败", "HTTP "+code);
+    }
     private <T> T withRetry(Callable<T> call)throws Exception{Exception last=null;for(int attempt=0;attempt<=MAX_RETRIES;attempt++){try{return call.call();}catch(TestException e){if(e.status.equals("认证失败")||e.status.equals("接口/模型不存在"))throw e;last=e;}catch(Exception e){last=e;}if(attempt<MAX_RETRIES)try{Thread.sleep(250L*(1L<<attempt));}catch(InterruptedException e){Thread.currentThread().interrupt();throw e;}}throw last;}
     private String safeMessage(Exception e){String m=e.getMessage();return m==null?e.getClass().getSimpleName():m;}
     private static final class ModelsResponse {final List<String> models;final long ttfbMs;ModelsResponse(List<String> m,long t){models=m;ttfbMs=t;}}
