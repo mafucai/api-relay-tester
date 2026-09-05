@@ -57,7 +57,7 @@ public final class MainActivity extends Activity {
         view.setWebViewClient(new WebViewClient());
         view.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onJsPrompt(android.webkit.WebView v, String url, String message, String defaultValue, android.webkit.JsPromptResult result) { result.confirm(); return true; }
-            @Override public boolean onJsConfirm(android.webkit.WebView v, String url, String message, android.webkit.JsConfirmResult result) { result.confirm(); return true; }
+            @Override public boolean onJsConfirm(android.webkit.WebView v, String url, String message, android.webkit.JsResult result) { result.confirm(); return true; }
             @Override public boolean onJsAlert(android.webkit.WebView v, String url, String message, android.webkit.JsResult result) { result.confirm(); return true; }
         });
         view.addJavascriptInterface(new NativeBridge(), "AndroidRelay");
