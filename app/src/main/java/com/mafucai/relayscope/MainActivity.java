@@ -138,7 +138,7 @@ public final class MainActivity extends Activity {
                                 org.json.JSONArray du = o.optJSONArray("daily_usage");
                                 if (du != null && du.length() > 0) { org.json.JSONObject d0 = du.getJSONObject(0); cost = d0.optDouble("cost", 0); actual = d0.optDouble("actual_cost", 0); }
                             }
-                            double mult = (cost > 0 && actual > 0) ? cost / actual : 0;
+                            double mult = (cost > 0 && actual > 0) ? actual / cost : 0;
                             if (mult > 0) {
                                 // 全模型统一倍率（站内扣费倍率）→ 写入价格库所有该站模型行
                                 java.util.List<PriceStore.Price> prices = priceStore.load();
