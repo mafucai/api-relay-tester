@@ -84,11 +84,20 @@ public final class RelayTester {
         }
     }
 
+    /** One API 式判断：非 JSON Content-Type 直接判定网关返回网页，不做猜测解析。 */
+    private static boolean looksLikeHtml(HttpURLConnection c, String body) {
+        String ct = c.getContentType();
+        if (ct != null) { String t = ct.toLowerCase(); if (t.contains("text/html") || t.contains("text/plain") && body.trim().startsWith("<")) return true; }
+        String b = body.trim().toLowerCase();
+        return b.startsWith("<!doctype") || b.startsWith("<html");
+    }
+
     private ModelsResponse fetchModels(RelaySite site) throws Exception {
         long start = System.nanoTime(); HttpURLConnection connection = open(site.modelsUrl(), site.apiKey, "GET");
         try {
             int code = connection.getResponseCode(); String body = readBody(connection, code);
             if (code < 200 || code >= 300) throw classify(code, body);
+            if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "接口返回了 HTML 而非 JSON：地址可能填错（缺 /v1）、被网关/人机验证拦截，或站点宕机");
             JSONArray data;
             try { data = new JSONObject(body).optJSONArray("data"); }
             catch (JSONException je) { throw new TestException("响应不是 JSON", "接口返回了网页而非 JSON（可能地址填错、被网关/人机验证拦截），请检查模型接口地址"); }
@@ -103,7 +112,8 @@ public final class RelayTester {
         JSONArray messages = new JSONArray(); messages.put(new JSONObject().put("role", "user").put("content", "Reply with one word: OK")); payload.put("messages", messages);
         long start = System.nanoTime(); HttpURLConnection connection = open(site.chatUrl(), site.apiKey, "POST"); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
         try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
-        int code = connection.getResponseCode(); if (code < 200 || code >= 300) throw classify(code, readBody(connection, code));
+        int code = connection.getResponseCode();
+        if (code < 200 || code >= 300) { String body = readBody(connection, code); if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "对话接口返回了 HTML 而非 JSON：可能被网关/人机验证拦截"); throw classify(code, body); }
         try (InputStream input = connection.getInputStream()) { byte[] buffer = new byte[512]; int count=input.read(buffer); if(count<0) throw new TestException("流式空响应", "服务端没有返回 token"); return (System.nanoTime()-start)/1_000_000; }
         finally { connection.disconnect(); }
     }
