@@ -4,7 +4,7 @@ Android app for comparing OpenAI-compatible API relay stations.
 
 ## Current milestone
 
-The approved browser front-end is the single source of truth for the Android UI. The production APK must load the same HTML/CSS/JS from `app/src/main/assets/` in a WebView; native Java is reserved for the bridge and Android-only capabilities.
+The approved browser front-end is the single source of truth for the Android UI. The production APK now loads the same HTML/CSS/JS from `app/src/main/assets/` in a WebView; native Java is reserved for the bridge and Android-only capabilities.
 
 - overview ranking
 - model availability matrix
@@ -30,7 +30,7 @@ The supported build route is GitHub Actions. The ordinary Android build checklis
 
 Push this repository to GitHub and `.github/workflows/apk.yml` installs Android SDK 35, runs `assembleRelease`, signs the unsigned APK, verifies it, uploads an artifact, and publishes a GitHub Release asset.
 
-The first `build-4` package was a validation build with a CI temporary signing key. A production release must replace this with a fixed keystore stored in GitHub Secrets so later APKs can upgrade the installed package without uninstalling it.
+The first `build-4` package was a validation build with a CI temporary signing key and the old native-rendered shell. The next `0.2.0` package is the WebView/empty-state correction build. A production release must replace the temporary key with a fixed keystore stored in GitHub Secrets so later APKs can upgrade the installed package without uninstalling it.
 
 ## Security and runtime limitations
 
