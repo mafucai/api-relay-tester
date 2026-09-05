@@ -19,8 +19,11 @@ import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class MainActivity extends Activity {
     private static final int PICK_PRICE_IMAGE = 42;
@@ -28,6 +31,7 @@ public final class MainActivity extends Activity {
     private SiteStore siteStore;
     private PriceStore priceStore;
     private final RelayTester relayTester = new RelayTester();
+    private final Map<String, RelayTester.TestResult> results = new HashMap<>();
     private final TextRecognizer textRecognizer = TextRecognition.getClient(
             new ChineseTextRecognizerOptions.Builder().build());
 
@@ -69,13 +73,39 @@ public final class MainActivity extends Activity {
     private final class NativeBridge {
         @JavascriptInterface public void addSite(String name, String baseUrl, String apiKey, String priceUrl) {
             if (baseUrl == null || baseUrl.trim().isEmpty()) { toast("接口地址不能为空"); return; }
-            siteStore.add(new RelaySite(name, baseUrl, apiKey, priceUrl));
-            evaluate("window.onNativeSiteCount && window.onNativeSiteCount(" + siteStore.load().size() + ")");
+            boolean added = siteStore.addIfAbsent(new RelaySite(name, baseUrl, apiKey, priceUrl));
+            if (!added) { toast("这个接口地址已经添加过了"); return; }
+            pushState();
             toast("站点已安全保存，点击开始全站测试");
         }
 
         @JavascriptInterface public void syncState() {
-            evaluate("window.onNativeSiteCount && window.onNativeSiteCount(" + siteStore.load().size() + ")");
+            pushState();
+        }
+
+        private void pushState() {
+            JSONArray sites = new JSONArray();
+            for (RelaySite site : siteStore.load()) {
+                JSONObject item = new JSONObject();
+                try { item.put("name", site.name); item.put("baseUrl", site.baseUrl); sites.put(item); }
+                catch (Exception ignored) { }
+            }
+            JSONArray resultArray = new JSONArray();
+            for (RelayTester.TestResult result : results.values()) {
+                JSONObject item = new JSONObject();
+                try {
+                    item.put("site", result.siteName);
+                    item.put("status", result.status);
+                    item.put("detail", result.detail);
+                    item.put("ttfb", result.ttfbMs);
+                    item.put("models", result.models.size());
+                    JSONObject modelResults = new JSONObject();
+                    for (Map.Entry<String, String> entry : result.modelResults.entrySet()) modelResults.put(entry.getKey(), entry.getValue());
+                    item.put("modelResults", modelResults);
+                    resultArray.put(item);
+                } catch (Exception ignored) { }
+            }
+            evaluate("window.onNativeState && window.onNativeState(" + sites.toString() + "," + priceStore.exportJson().toString() + "," + resultArray.toString() + ")");
         }
 
         @JavascriptInterface public void testAll() {
@@ -86,9 +116,11 @@ public final class MainActivity extends Activity {
             for (RelaySite site : sites) {
                 relayTester.testAsync(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
-                    evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + ")");
+                    results.put(result.siteName, result);
+                    evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + result.models.size() + ")");
                     if (--remaining[0] == 0) {
                         evaluate("window.onNativeTestDone && window.onNativeTestDone()");
+                        pushState();
                         toast("真实测试完成");
                     }
                 });
@@ -124,6 +156,7 @@ public final class MainActivity extends Activity {
                 double in = Double.parseDouble(input), out = Double.parseDouble(output), factor = Double.parseDouble(multiplier);
                 if (model == null || model.trim().isEmpty() || in < 0 || out < 0 || factor <= 0) throw new NumberFormatException();
                 priceStore.upsert(new PriceStore.Price(model.trim(), in, out, factor, "CNY", "手动"));
+                pushState();
                 toast("价格和余额倍率已保存");
             } catch (NumberFormatException e) { toast("请填写有效价格与倍率"); }
         }

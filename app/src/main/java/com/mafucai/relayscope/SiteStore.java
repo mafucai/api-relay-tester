@@ -22,7 +22,7 @@ public final class SiteStore {
             JSONArray array = new JSONArray(raw);
             for (int i = 0; i < array.length(); i++) {
                 RelaySite stored = RelaySite.fromJson(array.getJSONObject(i));
-                result.add(new RelaySite(stored.name, stored.baseUrl, secretBox.decrypt(stored.apiKey)));
+                result.add(new RelaySite(stored.name, stored.baseUrl, secretBox.decrypt(stored.apiKey), stored.priceUrl));
             }
             // 兼容旧版明文：成功读取后立即回写加密值。
             save(result);
@@ -30,7 +30,15 @@ public final class SiteStore {
         return result;
     }
 
-    public void add(RelaySite site) { List<RelaySite> sites = load(); sites.add(site); save(sites); }
+    public boolean addIfAbsent(RelaySite site) {
+        List<RelaySite> sites = load();
+        for (RelaySite existing : sites) {
+            if (existing.baseUrl.equalsIgnoreCase(site.baseUrl)) return false;
+        }
+        sites.add(site);
+        save(sites);
+        return true;
+    }
 
     private void save(List<RelaySite> sites) {
         JSONArray array = new JSONArray();
