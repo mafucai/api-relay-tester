@@ -8,45 +8,28 @@ public final class RelaySite {
     public final String baseUrl;
     public final String apiKey;
     public final String priceUrl;
-    public final String group;
 
     public RelaySite(String name, String baseUrl, String apiKey) {
-        this(name, baseUrl, apiKey, "", "");
+        this(name, baseUrl, apiKey, "");
     }
 
     public RelaySite(String name, String baseUrl, String apiKey, String priceUrl) {
-        this(name, baseUrl, apiKey, priceUrl, "");
-    }
-
-    public RelaySite(String name, String baseUrl, String apiKey, String priceUrl, String group) {
         this.name = clean(name, "未命名站点");
         this.baseUrl = clean(baseUrl, "").replaceAll("/+$", "");
         this.apiKey = clean(apiKey, "");
         this.priceUrl = clean(priceUrl, "");
-        this.group = clean(group, "");
     }
 
     private static String clean(String value, String fallback) {
         return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
-    /** One API 哲学：地址用户填什么就用什么，不猜测拼接。 */
     public String modelsUrl() {
-        return joinUrl("/models");
+        return baseUrl.endsWith("/v1") ? baseUrl + "/models" : baseUrl + "/v1/models";
     }
 
     public String chatUrl() {
-        return joinUrl("/chat/completions");
-    }
-
-    private String joinUrl(String path) {
-        String base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        return base + (path.startsWith("/") ? path : "/" + path);
-    }
-
-    /** 地址是否以 /v1 结尾，用于结果页提示（不再自动改写地址）。 */
-    public boolean looksLikeMissingV1() {
-        return !baseUrl.endsWith("/v1");
+        return baseUrl.endsWith("/v1") ? baseUrl + "/chat/completions" : baseUrl + "/v1/chat/completions";
     }
 
     public JSONObject toJson() throws JSONException {
@@ -55,11 +38,10 @@ public final class RelaySite {
         object.put("base_url", baseUrl);
         object.put("api_key", apiKey);
         object.put("price_url", priceUrl);
-        object.put("group", group);
         return object;
     }
 
     public static RelaySite fromJson(JSONObject object) {
-        return new RelaySite(object.optString("name"), object.optString("base_url"), object.optString("api_key"), object.optString("price_url"), object.optString("group"));
+        return new RelaySite(object.optString("name"), object.optString("base_url"), object.optString("api_key"), object.optString("price_url"));
     }
 }

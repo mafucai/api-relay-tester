@@ -8,22 +8,16 @@ public final class RelaySite {
     public final String baseUrl;
     public final String apiKey;
     public final String priceUrl;
-    public final String group;
 
     public RelaySite(String name, String baseUrl, String apiKey) {
-        this(name, baseUrl, apiKey, "", "");
+        this(name, baseUrl, apiKey, "");
     }
 
     public RelaySite(String name, String baseUrl, String apiKey, String priceUrl) {
-        this(name, baseUrl, apiKey, priceUrl, "");
-    }
-
-    public RelaySite(String name, String baseUrl, String apiKey, String priceUrl, String group) {
         this.name = clean(name, "未命名站点");
         this.baseUrl = clean(baseUrl, "").replaceAll("/+$", "");
         this.apiKey = clean(apiKey, "");
         this.priceUrl = clean(priceUrl, "");
-        this.group = clean(group, "");
     }
 
     private static String clean(String value, String fallback) {
@@ -55,11 +49,10 @@ public final class RelaySite {
         object.put("base_url", baseUrl);
         object.put("api_key", apiKey);
         object.put("price_url", priceUrl);
-        object.put("group", group);
         return object;
     }
 
     public static RelaySite fromJson(JSONObject object) {
-        return new RelaySite(object.optString("name"), object.optString("base_url"), object.optString("api_key"), object.optString("price_url"), object.optString("group"));
+        return new RelaySite(object.optString("name"), object.optString("base_url"), object.optString("api_key"), object.optString("price_url"));
     }
 }

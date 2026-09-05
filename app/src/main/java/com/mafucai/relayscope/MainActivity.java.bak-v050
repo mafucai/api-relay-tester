@@ -32,8 +32,6 @@ public final class MainActivity extends Activity {
     private PriceStore priceStore;
     private final RelayTester relayTester = new RelayTester();
     private final Map<String, RelayTester.TestResult> results = new HashMap<>();
-    private final Map<String, Double> balances = new HashMap<>();
-    private final Map<String, Integer> failStreak = new HashMap<>();
     private final TextRecognizer textRecognizer = TextRecognition.getClient(
             new ChineseTextRecognizerOptions.Builder().build());
 
@@ -73,9 +71,9 @@ public final class MainActivity extends Activity {
     }
 
     private final class NativeBridge {
-        @JavascriptInterface public void addSite(String name, String baseUrl, String apiKey, String priceUrl, String group) {
+        @JavascriptInterface public void addSite(String name, String baseUrl, String apiKey, String priceUrl) {
             if (baseUrl == null || baseUrl.trim().isEmpty()) { toast("接口地址不能为空"); return; }
-            boolean added = siteStore.addIfAbsent(new RelaySite(name, baseUrl, apiKey, priceUrl, group));
+            boolean added = siteStore.addIfAbsent(new RelaySite(name, baseUrl, apiKey, priceUrl));
             if (!added) { toast("这个接口地址已经添加过了"); return; }
             pushState();
             toast("站点已安全保存，点击开始全站测试");
@@ -87,9 +85,9 @@ public final class MainActivity extends Activity {
             else toast("未找到站点：" + name);
         }
 
-        @JavascriptInterface public void updateSite(String originalBaseUrl, String name, String baseUrl, String apiKey, String priceUrl, String group) {
+        @JavascriptInterface public void updateSite(String originalBaseUrl, String name, String baseUrl, String apiKey, String priceUrl) {
             if (baseUrl == null || baseUrl.trim().isEmpty()) { toast("接口地址不能为空"); return; }
-            RelaySite updated = new RelaySite(name, baseUrl, apiKey, priceUrl, group);
+            RelaySite updated = new RelaySite(name, baseUrl, apiKey, priceUrl);
             // 改地址后新地址若与其他站点重复也拒绝
             for (RelaySite s : siteStore.load()) {
                 if (!s.baseUrl.equalsIgnoreCase(originalBaseUrl) && s.baseUrl.equalsIgnoreCase(updated.baseUrl)) { toast("新地址与其他站点重复"); return; }
@@ -102,72 +100,6 @@ public final class MainActivity extends Activity {
             } else toast("未找到原站点");
         }
 
-        @JavascriptInterface public void fetchBalance(String name) {
-            RelaySite target = null;
-            for (RelaySite s : siteStore.load()) if (s.name.equals(name)) { target = s; break; }
-            if (target == null) { toast("未找到站点：" + name); return; }
-            final RelaySite site = target;
-            final String url = site.baseUrl + "/usage";
-            new Thread(() -> {
-                String finalMsg;
-                try {
-                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-                    c.setConnectTimeout(8000); c.setReadTimeout(12000);
-                    c.setRequestProperty("Accept", "application/json");
-                    c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
-                    if (!site.apiKey.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + site.apiKey);
-                    int code = c.getResponseCode();
-                    java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-                    StringBuilder b = new StringBuilder();
-                    if (in != null) { java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8)); String line; while ((line = r.readLine()) != null && b.length() < 20000) b.append(line); }
-                    c.disconnect();
-                    if (code != 200) { finalMsg = "HTTP " + code; }
-                    else {
-                        org.json.JSONObject o = new org.json.JSONObject(b.toString());
-                        if (o.has("balance")) {
-                            double bal = o.getDouble("balance");
-                            String today = "";
-                            org.json.JSONArray du = o.optJSONArray("daily_usage");
-                            if (du != null && du.length() > 0) {
-                                org.json.JSONObject d0 = du.getJSONObject(0);
-                                double cost = d0.optDouble("actual_cost", d0.optDouble("cost", -1));
-                                if (cost >= 0) today = String.format("今日消费 %.4f", cost);
-                            }
-                            balances.put(site.name, bal);
-                            finalMsg = String.format("余额 %.4f%s", bal, today.isEmpty() ? "" : " · " + today);
-                            runOnUiThread(() -> { pushState(); });
-                        } else finalMsg = "响应无 balance 字段";
-                    }
-                } catch (Exception e) { finalMsg = "获取失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()); }
-                String msg = finalMsg;
-                runOnUiThread(() -> toast(site.name + "：" + msg));
-            }, "balance-fetch").start();
-        }
-
-        @JavascriptInterface public void testGroup(String group) {
-            java.util.List<RelaySite> targets = new java.util.ArrayList<>();
-            for (RelaySite s : siteStore.load()) {
-                if (group == null || group.isEmpty()) { if (s.group.isEmpty()) targets.add(s); }
-                else if (group.equals(s.group)) targets.add(s);
-            }
-            if (targets.isEmpty()) { toast("该分组下没有站点"); return; }
-            evaluate("window.onNativeTestStart && window.onNativeTestStart(" + targets.size() + ")");
-            final int[] remaining = {targets.size()};
-            for (RelaySite site : targets) {
-                relayTester.testAsync(site, "gpt-5.6-terra", result -> {
-                    String detail = result.detail == null ? result.status : result.detail;
-                    noteFailStreak(result.siteName, result.status);
-                    results.put(result.siteName, result);
-                    evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
-                    if (--remaining[0] == 0) {
-                        evaluate("window.onNativeTestDone && window.onNativeTestDone()");
-                        pushState();
-                        toast("分组测试完成：" + (group.isEmpty() ? "未分组" : group));
-                    }
-                });
-            }
-        }
-
         @JavascriptInterface public void testSite(String name) {
             RelaySite target = null;
             for (RelaySite s : siteStore.load()) if (s.name.equals(name)) { target = s; break; }
@@ -176,7 +108,6 @@ public final class MainActivity extends Activity {
             evaluate("window.onNativeTestStart && window.onNativeTestStart(1)");
             relayTester.testAsync(site, "gpt-5.6-terra", result -> {
                 String detail = result.detail == null ? result.status : result.detail;
-                noteFailStreak(result.siteName, result.status);
                 results.put(result.siteName, result);
                 evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
                 evaluate("window.onNativeTestDone && window.onNativeTestDone()");
@@ -189,47 +120,12 @@ public final class MainActivity extends Activity {
             pushState();
         }
 
-        private void noteFailStreak(String siteName, String status) {
-            if ("可用".equals(status)) failStreak.remove(siteName);
-            else failStreak.merge(siteName, 1, Integer::sum);
-            android.content.SharedPreferences p = getSharedPreferences("relayscope_stats", MODE_PRIVATE);
-            String key = "rate_" + siteName;
-            try {
-                org.json.JSONObject o = new org.json.JSONObject(p.getString(key, "{\"ok\":0,\"total\":0}"));
-                o.put("total", o.optInt("total") + 1);
-                if ("可用".equals(status)) o.put("ok", o.optInt("ok") + 1);
-                p.edit().putString(key, o.toString()).apply();
-            } catch (Exception ignored) { }
-        }
-
-        private int successRate(String siteName) {
-            try {
-                org.json.JSONObject o = new org.json.JSONObject(getSharedPreferences("relayscope_stats", MODE_PRIVATE).getString("rate_" + siteName, "{\"ok\":0,\"total\":0}"));
-                int total = o.optInt("total");
-                return total == 0 ? -1 : Math.round(100f * o.optInt("ok") / total);
-            } catch (Exception e) { return -1; }
-        }
-
         private void pushState() {
             JSONArray sites = new JSONArray();
             for (RelaySite site : siteStore.load()) {
                 JSONObject item = new JSONObject();
-                try { item.put("name", site.name); item.put("baseUrl", site.baseUrl); item.put("apiKey", site.apiKey); item.put("priceUrl", site.priceUrl); item.put("group", site.group); sites.put(item); }
+                try { item.put("name", site.name); item.put("baseUrl", site.baseUrl); item.put("apiKey", site.apiKey); item.put("priceUrl", site.priceUrl); sites.put(item); }
                 catch (Exception ignored) { }
-            }
-            org.json.JSONArray rateArray = new org.json.JSONArray();
-            for (RelaySite s : siteStore.load()) {
-                int rate = successRate(s.name);
-                if (rate >= 0) { JSONObject ri = new JSONObject(); try { ri.put("site", s.name); ri.put("rate", rate); rateArray.put(ri); } catch (Exception ignored) { } }
-            }
-            org.json.JSONArray failArray = new org.json.JSONArray();
-            for (Map.Entry<String, Integer> en : failStreak.entrySet()) {
-                if (en.getValue() >= 2) { JSONObject fi = new JSONObject(); try { fi.put("site", en.getKey()); fi.put("streak", en.getValue()); failArray.put(fi); } catch (Exception ignored) { } }
-            }
-            org.json.JSONArray balanceArray = new org.json.JSONArray();
-            for (Map.Entry<String, Double> en : balances.entrySet()) {
-                JSONObject bi = new JSONObject();
-                try { bi.put("site", en.getKey()); bi.put("balance", en.getValue()); balanceArray.put(bi); } catch (Exception ignored) { }
             }
             JSONArray resultArray = new JSONArray();
             for (RelayTester.TestResult result : results.values()) {
@@ -246,7 +142,7 @@ public final class MainActivity extends Activity {
                     resultArray.put(item);
                 } catch (Exception ignored) { }
             }
-            evaluate("window.onNativeState && window.onNativeState(" + sites.toString() + "," + priceStore.exportJson().toString() + "," + resultArray.toString() + "," + balanceArray.toString() + "," + failArray.toString() + "," + rateArray.toString() + ")");
+            evaluate("window.onNativeState && window.onNativeState(" + sites.toString() + "," + priceStore.exportJson().toString() + "," + resultArray.toString() + ")");
         }
 
         @JavascriptInterface public void testAll() {
@@ -257,7 +153,6 @@ public final class MainActivity extends Activity {
             for (RelaySite site : sites) {
                 relayTester.testAsync(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
-                    noteFailStreak(result.siteName, result.status);
                     results.put(result.siteName, result);
                     evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
                     if (--remaining[0] == 0) {
@@ -290,14 +185,14 @@ public final class MainActivity extends Activity {
             startActivityForResult(intent, PICK_PRICE_IMAGE);
         }
 
-        @JavascriptInterface public void startInspection(String minutesText, String group) {
+        @JavascriptInterface public void startInspection(String minutesText) {
             try {
                 float minutes = Float.parseFloat(minutesText);
                 if (!(minutes > 0) || Float.isInfinite(minutes)) throw new NumberFormatException();
-                getSharedPreferences("relayscope", MODE_PRIVATE).edit().putFloat("interval", minutes).putString("inspection_group", group == null ? "" : group).apply();
-                Intent intent = new Intent(MainActivity.this, InspectionService.class).putExtra("interval_minutes", minutes).putExtra("inspection_group", group == null ? "" : group);
+                getSharedPreferences("relayscope", MODE_PRIVATE).edit().putFloat("interval", minutes).apply();
+                Intent intent = new Intent(MainActivity.this, InspectionService.class).putExtra("interval_minutes", minutes);
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent); else startService(intent);
-                toast("巡检已开启" + (group == null || group.isEmpty() ? "（全站）" : "（分组：" + group + "）"));
+                toast("后台巡检已开启");
             } catch (NumberFormatException e) { toast("请输入大于 0 的巡检间隔"); }
         }
 
