@@ -21,6 +21,7 @@ public final class PriceStore {
     public PriceStore(Context context){this.context=context.getApplicationContext();}
     public List<Price> load(){List<Price> out=new ArrayList<>();String raw=context.getSharedPreferences("relayscope_prices",Context.MODE_PRIVATE).getString("prices","[]");try{JSONArray a=new JSONArray(raw);for(int i=0;i<a.length();i++)out.add(Price.from(a.getJSONObject(i)));}catch(JSONException ignored){}return out;}
     public void upsert(Price price){List<Price> all=load();for(int i=0;i<all.size();i++)if(all.get(i).model.equalsIgnoreCase(price.model)){all.set(i,price);save(all);return;}all.add(price);save(all);}
+    public void saveAll(java.util.List<Price> prices){save(prices);}
     public Price find(String model){for(Price p:load())if(p.model.equalsIgnoreCase(model))return p;return null;}
     public JSONArray exportJson(){JSONArray a=new JSONArray();for(Price p:load()){try{a.put(p.json());}catch(JSONException e){throw new IllegalStateException(e);}}return a;}
     private void save(List<Price> prices){JSONArray a=new JSONArray();try{for(Price p:prices)a.put(p.json());}catch(JSONException e){throw new IllegalStateException(e);}context.getSharedPreferences("relayscope_prices",Context.MODE_PRIVATE).edit().putString("prices",a.toString()).apply();}

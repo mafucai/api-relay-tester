@@ -102,7 +102,7 @@ public final class MainActivity extends Activity {
             } else toast("未找到原站点");
         }
 
-        @JavascriptInterface public void fetchBalance(String name) {
+                @JavascriptInterface public void fetchBalance(String name) {
             RelaySite target = null;
             for (RelaySite s : siteStore.load()) if (s.name.equals(name)) { target = s; break; }
             if (target == null) { toast("未找到站点：" + name); return; }
@@ -119,24 +119,42 @@ public final class MainActivity extends Activity {
                     int code = c.getResponseCode();
                     java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
                     StringBuilder b = new StringBuilder();
-                    if (in != null) { java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8)); String line; while ((line = r.readLine()) != null && b.length() < 20000) b.append(line); }
+                    if (in != null) { java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8)); String line; while ((line = r.readLine()) != null && b.length() < 60000) b.append(line); }
                     c.disconnect();
                     if (code != 200) { finalMsg = "HTTP " + code; }
                     else {
                         org.json.JSONObject o = new org.json.JSONObject(b.toString());
-                        if (o.has("balance")) {
-                            double bal = o.getDouble("balance");
-                            String today = "";
-                            org.json.JSONArray du = o.optJSONArray("daily_usage");
-                            if (du != null && du.length() > 0) {
-                                org.json.JSONObject d0 = du.getJSONObject(0);
-                                double cost = d0.optDouble("actual_cost", d0.optDouble("cost", -1));
-                                if (cost >= 0) today = String.format("今日消费 %.4f", cost);
-                            }
+                        double bal = o.has("balance") ? o.getDouble("balance") : o.optDouble("remaining", -1);
+                        if (bal < 0) { finalMsg = "响应无 balance 字段"; }
+                        else {
                             balances.put(site.name, bal);
-                            finalMsg = String.format("余额 %.4f%s", bal, today.isEmpty() ? "" : " · " + today);
-                            runOnUiThread(() -> { pushState(); });
-                        } else finalMsg = "响应无 balance 字段";
+                            String today = "";
+                            // 倍率：usage.today 或 daily_usage[0] 的 cost/actual_cost
+                            double cost = 0, actual = 0;
+                            org.json.JSONObject u = o.optJSONObject("usage");
+                            org.json.JSONObject t = u == null ? null : u.optJSONObject("today");
+                            if (t != null) { cost = t.optDouble("cost", 0); actual = t.optDouble("actual_cost", 0); }
+                            if (cost <= 0 || actual <= 0) {
+                                org.json.JSONArray du = o.optJSONArray("daily_usage");
+                                if (du != null && du.length() > 0) { org.json.JSONObject d0 = du.getJSONObject(0); cost = d0.optDouble("cost", 0); actual = d0.optDouble("actual_cost", 0); }
+                            }
+                            double mult = (cost > 0 && actual > 0) ? cost / actual : 0;
+                            if (mult > 0) {
+                                // 全模型统一倍率（站内扣费倍率）→ 写入价格库所有该站模型行
+                                java.util.List<PriceStore.Price> prices = priceStore.load();
+                                boolean updated = false;
+                                for (int i = 0; i < prices.size(); i++) {
+                                    PriceStore.Price p = prices.get(i);
+                                    if (Math.abs(p.balanceMultiplier - mult) > 1e-6) { prices.set(i, new PriceStore.Price(p.model, p.inputPerMillion, p.outputPerMillion, mult, p.currency, "倍率实测")); updated = true; }
+                                }
+                                if (updated) priceStore.saveAll(prices);
+                            }
+                            // 今日消费
+                            if (actual > 0) today = String.format("今日消费 %.4f", actual);
+                            else if (cost > 0) today = String.format("今日消费 %.4f", cost);
+                            finalMsg = String.format("余额 %.4f%s%s", bal, today.isEmpty() ? "" : " · " + today, mult > 0 ? String.format(" · 倍率 %.2f", mult) : "");
+                            runOnUiThread(() -> pushState());
+                        }
                     }
                 } catch (Exception e) { finalMsg = "获取失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()); }
                 String msg = finalMsg;
@@ -144,7 +162,7 @@ public final class MainActivity extends Activity {
             }, "balance-fetch").start();
         }
 
-        @JavascriptInterface public void testGroup(String group) {
+@JavascriptInterface public void testGroup(String group) {
             java.util.List<RelaySite> targets = new java.util.ArrayList<>();
             for (RelaySite s : siteStore.load()) {
                 if (group == null || group.isEmpty()) { if (s.group.isEmpty()) targets.add(s); }
