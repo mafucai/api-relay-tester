@@ -85,6 +85,37 @@ public final class MainActivity extends Activity {
             else toast("未找到站点：" + name);
         }
 
+        @JavascriptInterface public void updateSite(String originalBaseUrl, String name, String baseUrl, String apiKey, String priceUrl) {
+            if (baseUrl == null || baseUrl.trim().isEmpty()) { toast("接口地址不能为空"); return; }
+            RelaySite updated = new RelaySite(name, baseUrl, apiKey, priceUrl);
+            // 改地址后新地址若与其他站点重复也拒绝
+            for (RelaySite s : siteStore.load()) {
+                if (!s.baseUrl.equalsIgnoreCase(originalBaseUrl) && s.baseUrl.equalsIgnoreCase(updated.baseUrl)) { toast("新地址与其他站点重复"); return; }
+            }
+            if (siteStore.updateByBaseUrl(originalBaseUrl, updated)) {
+                results.remove(siteStore.nameOfBaseUrl(originalBaseUrl));
+                results.remove(updated.name);
+                pushState();
+                toast("已更新：" + updated.name + "，请重新测试");
+            } else toast("未找到原站点");
+        }
+
+        @JavascriptInterface public void testSite(String name) {
+            RelaySite target = null;
+            for (RelaySite s : siteStore.load()) if (s.name.equals(name)) { target = s; break; }
+            if (target == null) { toast("未找到站点：" + name); return; }
+            final RelaySite site = target;
+            evaluate("window.onNativeTestStart && window.onNativeTestStart(1)");
+            relayTester.testAsync(site, "gpt-5.6-terra", result -> {
+                String detail = result.detail == null ? result.status : result.detail;
+                results.put(result.siteName, result);
+                evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
+                evaluate("window.onNativeTestDone && window.onNativeTestDone()");
+                pushState();
+                toast("重新测试完成：" + result.siteName);
+            });
+        }
+
         @JavascriptInterface public void syncState() {
             pushState();
         }
@@ -93,7 +124,7 @@ public final class MainActivity extends Activity {
             JSONArray sites = new JSONArray();
             for (RelaySite site : siteStore.load()) {
                 JSONObject item = new JSONObject();
-                try { item.put("name", site.name); item.put("baseUrl", site.baseUrl); sites.put(item); }
+                try { item.put("name", site.name); item.put("baseUrl", site.baseUrl); item.put("apiKey", site.apiKey); item.put("priceUrl", site.priceUrl); sites.put(item); }
                 catch (Exception ignored) { }
             }
             JSONArray resultArray = new JSONArray();
@@ -104,7 +135,7 @@ public final class MainActivity extends Activity {
                     item.put("status", result.status);
                     item.put("detail", result.detail);
                     item.put("ttfb", result.ttfbMs);
-                    item.put("models", result.models.size());
+                    item.put("models", modelsJson(result.models));
                     JSONObject modelResults = new JSONObject();
                     for (Map.Entry<String, String> entry : result.modelResults.entrySet()) modelResults.put(entry.getKey(), entry.getValue());
                     item.put("modelResults", modelResults);
@@ -123,7 +154,7 @@ public final class MainActivity extends Activity {
                 relayTester.testAsync(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
                     results.put(result.siteName, result);
-                    evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + result.models.size() + ")");
+                    evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
                     if (--remaining[0] == 0) {
                         evaluate("window.onNativeTestDone && window.onNativeTestDone()");
                         pushState();
@@ -131,6 +162,20 @@ public final class MainActivity extends Activity {
                     }
                 });
             }
+        }
+
+        private String modelsJson(List<String> models) {
+            JSONArray array = new JSONArray();
+            for (String m : models) array.put(m);
+            return array.toString();
+        }
+
+        @JavascriptInterface public void copyText(String text) {
+            try {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("RelayScope", text == null ? "" : text));
+                toast("已复制到剪贴板");
+            } catch (Exception e) { toast("复制失败"); }
         }
 
         @JavascriptInterface public void pickPriceImage() {
@@ -156,7 +201,20 @@ public final class MainActivity extends Activity {
             toast("后台巡检已关闭");
         }
 
-        @JavascriptInterface public void fetchPrices() { toast("自动价格拉取已交给原生适配器"); }
+        @JavascriptInterface public void fetchPrices() {
+            RelaySite withPrice = null;
+            for (RelaySite s : siteStore.load()) if (!s.priceUrl.isEmpty()) { withPrice = s; break; }
+            if (withPrice == null) { toast("站点未填价格来源网址，请用截图识别或手动录入"); return; }
+            final RelaySite site = withPrice;
+            toast("正在拉取价格…");
+            PriceFetcher.fetchAsync(site.priceUrl, site.apiKey, r -> runOnUiThread(() -> {
+                if (r.success && !r.prices.isEmpty()) {
+                    for (PriceStore.Price p : r.prices) priceStore.upsert(p);
+                    pushState();
+                    toast("拉取成功：" + r.message);
+                } else toast("拉取失败：" + r.message);
+            }));
+        }
         @JavascriptInterface public void saveManualPrice(String model, String input, String output, String multiplier) {
             try {
                 double in = Double.parseDouble(input), out = Double.parseDouble(output), factor = Double.parseDouble(multiplier);

@@ -29,22 +29,25 @@ jobs:
       - name: Sign release APK
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS_NAME: ${{ secrets.KEYSTORE_ALIAS }}
         run: |
           set -euo pipefail
           SDK_BUILD_TOOLS="${ANDROID_HOME}/build-tools/35.0.0"
-          keytool -genkeypair -v \
-            -keystore release-ci.jks -storepass relayscope-ci \
-            -alias relayscope -keypass relayscope-ci \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=RelayScope CI, OU=Build, O=RelayScope, C=CN"
+          # 固定正式签名：从 Secrets 还原 keystore（覆盖安装、数据不丢的前提）
+          echo -n "${KEYSTORE_B64}" | base64 -d > release-fixed.jks
+          test -s release-fixed.jks
           UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
           SIGNED="app/build/outputs/apk/release/relayscope-release.apk"
           test -f "${UNSIGNED}"
           "${SDK_BUILD_TOOLS}/apksigner" sign \
-            --ks release-ci.jks --ks-pass pass:relayscope-ci \
-            --key-pass pass:relayscope-ci --out "${SIGNED}" "${UNSIGNED}"
+            --ks release-fixed.jks --ks-pass "pass:${KEYSTORE_PASS}" \
+            --ks-key-alias "${KEYSTORE_ALIAS_NAME}" \
+            --key-pass "pass:${KEYSTORE_PASS}" --out "${SIGNED}" "${UNSIGNED}"
           "${SDK_BUILD_TOOLS}/apksigner" verify "${SIGNED}"
-          rm -f release-ci.jks
+          "${SDK_BUILD_TOOLS}/apksigner" verify --print-certs "${SIGNED}" | head -4
+          rm -f release-fixed.jks
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

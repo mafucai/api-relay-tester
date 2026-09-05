@@ -53,6 +53,21 @@ public final class SiteStore {
         return changed;
     }
 
+    /** 按原地址定位并替换站点内容（编辑用）。 */
+    public boolean updateByBaseUrl(String originalBaseUrl, RelaySite updated) {
+        List<RelaySite> sites = load();
+        for (int i = 0; i < sites.size(); i++) {
+            if (sites.get(i).baseUrl.equalsIgnoreCase(originalBaseUrl)) { sites.set(i, updated); save(sites); return true; }
+        }
+        return false;
+    }
+
+    /** 按地址查站点名（编辑后清测试结果用）。 */
+    public String nameOfBaseUrl(String baseUrl) {
+        for (RelaySite s : load()) if (s.baseUrl.equalsIgnoreCase(baseUrl)) return s.name;
+        return "";
+    }
+
     private void save(List<RelaySite> sites) {
         JSONArray array = new JSONArray();
         try {

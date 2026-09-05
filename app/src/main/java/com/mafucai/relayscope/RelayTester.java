@@ -61,19 +61,28 @@ public final class RelayTester {
         try {
             ModelsResponse response = withRetry(() -> fetchModels(site));
             if (response.models.isEmpty()) return new TestResult(site.name, "模型为空", "接口可连通，但没有可用模型", response.ttfbMs, response.models, new LinkedHashMap<>());
+            // 模型级并发：线程池 4 路，总耗时≈最慢单模型而不是全部之和
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+            Map<String, java.util.concurrent.Future<String>> futures = new LinkedHashMap<>();
+            for (String model : response.models) {
+                futures.put(model, pool.submit(() -> {
+                    try {
+                        long streamMs = withRetry(() -> probeChat(site, model));
+                        return "可用 · " + streamMs + " ms";
+                    } catch (TestException e) {
+                        return e.status;
+                    } catch (Exception e) {
+                        return "网络错误";
+                    }
+                }));
+            }
             Map<String, String> modelResults = new LinkedHashMap<>();
             int available = 0;
-            for (String model : response.models) {
-                try {
-                    long streamMs = withRetry(() -> probeChat(site, model));
-                    modelResults.put(model, "可用 · " + streamMs + " ms");
-                    available++;
-                } catch (TestException e) {
-                    modelResults.put(model, e.status);
-                } catch (Exception e) {
-                    modelResults.put(model, "网络错误");
-                }
+            for (Map.Entry<String, java.util.concurrent.Future<String>> en : futures.entrySet()) {
+                try { String v = en.getValue().get(); modelResults.put(en.getKey(), v); if (v.startsWith("可用")) available++; }
+                catch (Exception e) { modelResults.put(en.getKey(), "网络错误"); }
             }
+            pool.shutdown();
             String status = available == response.models.size() ? "可用" : available == 0 ? "不可用" : "部分可用";
             String detail = "首包 " + response.ttfbMs + " ms · 流式模型 " + available + "/" + response.models.size();
             return new TestResult(site.name, status, detail, response.ttfbMs, response.models, modelResults);
