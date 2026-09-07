@@ -284,10 +284,16 @@ public final class MainActivity extends Activity {
             relayTester.reset();
             List<RelaySite> sites = siteStore.load();
             if (sites.isEmpty()) { toast("还没有中转站，请先添加第一个站点"); return; }
+            String mode = this.testMode;
+            final boolean single = "single".equals(mode) && !this.testModel.isEmpty();
+            final String chosenModel = this.testModel;
             evaluate("window.onNativeTestStart && window.onNativeTestStart(" + sites.size() + ")");
             final int[] remaining = {sites.size()};
             for (RelaySite site : sites) {
-                relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
+                if (single) {
+                    relayTester.testAsyncCancelable(site, chosenModel, result -> singleResult(result, chosenModel, remaining, sites.size()));
+                } else {
+                    relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
                     noteFailStreak(result.siteName, result.status);
                     results.put(result.siteName, result);
@@ -297,8 +303,28 @@ public final class MainActivity extends Activity {
                         pushState();
                         toast("真实测试完成");
                     }
-                });
+                    });
+                }
             }
+        }
+
+        private void singleResult(RelayTester.TestResult result, String model, int[] remaining, int total) {
+            String detail = result.detail == null ? result.status : result.detail;
+            evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
+            if (--remaining[0] == 0) {
+                evaluate("window.onNativeTestDone && window.onNativeTestDone()");
+                pushState();
+                toast("单模型测试完成：" + model);
+            }
+        }
+
+        private String testMode = "full";
+        private String testModel = "gpt-5.6-terra";
+
+        @JavascriptInterface public void setTestMode(String mode, String model) {
+            this.testMode = (mode == null || mode.isEmpty()) ? "full" : mode;
+            this.testModel = (model == null || model.trim().isEmpty()) ? "gpt-5.6-terra" : model.trim();
+            toast("single".equals(this.testMode) ? "测试模式：单模型 " + this.testModel : "测试模式：全量逐模型");
         }
 
         private String modelsJson(List<String> models) {

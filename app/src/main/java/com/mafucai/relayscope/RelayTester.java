@@ -127,6 +127,25 @@ public final class RelayTester {
         }
     }
 
+    /** 单模型快速测试：不拉模型列表，只测指定模型一发。 */
+    public TestResult testSingleModel(RelaySite site, String model) {
+        try {
+            if (isCancelled()) return new TestResult(site.name, CANCELLED_STATUS, "已停止", -1, new ArrayList<>(model.isEmpty()?java.util.Collections.emptyList():java.util.Collections.singletonList(model)), new LinkedHashMap<>());
+            long streamMs = withRetry(() -> probeChat(site, model));
+            Map<String, String> modelResults = new LinkedHashMap<>();
+            modelResults.put(model, "可用 · " + streamMs + " ms");
+            return new TestResult(site.name, "可用", "单模型 " + model + " · " + streamMs + " ms", -1, new ArrayList<>(java.util.Collections.singletonList(model)), modelResults);
+        } catch (TestException e) {
+            Map<String, String> mr = new LinkedHashMap<>();
+            mr.put(model, e.status);
+            return new TestResult(site.name, e.status, e.getMessage() + "（模型 " + model + "）", -1, new ArrayList<>(java.util.Collections.singletonList(model)), mr);
+        } catch (Exception e) {
+            Map<String, String> mr = new LinkedHashMap<>();
+            mr.put(model, "网络错误");
+            return new TestResult(site.name, "网络错误", safeMessage(e), -1, new ArrayList<>(java.util.Collections.singletonList(model)), mr);
+        }
+    }
+
     /** One API 式判断：非 JSON Content-Type 直接判定网关返回网页，不做猜测解析。 */
     private static boolean looksLikeHtml(HttpURLConnection c, String body) {
         String ct = c.getContentType();
