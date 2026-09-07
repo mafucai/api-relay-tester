@@ -1,0 +1,3 @@
+const $=s=>document.querySelector(s),toast=t=>{let e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(window.tt);window.tt=setTimeout(()=>e.style.display='none',1800)};
+let nativeSites=[],nativePrices=[],nativeResults={},nativeBalances={},nativeFails={},nativeRates={};const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));window.onNativeSiteCount=n=>{$('#siteCount').textContent=n+' 个站点'};window.addEventListener('load',()=>{if(window.AndroidRelay)AndroidRelay.syncState()});
+function isImageModel(m){return /imagine|image|dall-?e|flux|midjourney|^mj|stable-?diffusion|^sd[.-]|draw|banana|seedream|ideogram|recraft/i.test(m)}
