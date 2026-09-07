@@ -329,19 +329,19 @@ public final class MainActivity extends Activity {
             java.util.Set<String> seen = new java.util.LinkedHashSet<>();
             for (RelaySite site : sites) {
                 new Thread(() -> {
-                    String err = null;
+                    String err = null; int got = 0;
                     try {
                         RelayTester.ModelsResponse resp = relayTester.fetchModels(site);
                         synchronized (seen) { for (String m : resp.models) seen.add(m); }
-                    } catch (Exception e) { err = site.name + "：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()); }
-                    final String errMsg = err;
+                        got = resp.models.size();
+                    } catch (Exception e) { err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+                    final String errMsg = err; final int gotN = got;
                     runOnUiThread(() -> {
-                        if (errMsg != null) toast("拉取失败 " + errMsg);
+                        toast(errMsg != null ? site.name + " 拉取失败：" + errMsg : site.name + " 拉到 " + gotN + " 个模型");
                         if (remaining.decrementAndGet() == 0) {
                             JSONArray arr = new JSONArray();
                             for (String m : seen) arr.put(m);
                             evaluate("window.onNativeModelList && window.onNativeModelList(" + arr.toString() + ")");
-                            toast(seen.isEmpty() ? "没有拉到任何模型" : "已拉取 " + seen.size() + " 个模型");
                         }
                     });
                 }, "fetch-models").start();
