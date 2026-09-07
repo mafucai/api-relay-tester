@@ -67,28 +67,6 @@ public final class RelayTester {
         return t;
     }
 
-    /** 后台巡检用的低成本探针，不参与可以中断的全站测试标记。 */
-    public Thread healthAsync(final RelaySite site, final String preferredModel, final Callback callback) {
-        Thread t = new Thread(() -> callback.onResult(testInternal(site, preferredModel, true)), "relay-health");
-        t.start(); return t;
-    }
-
-    /** 可中断的全站/单站测试（health=false，可被 stopTest 打断）。 */
-    public Thread testAsyncCancelable(final RelaySite site, final String preferredModel, final Callback callback) {
-        Thread t = new Thread(() -> callback.onResult(testInternal(site, preferredModel, false)), "relay-test-cancel");
-        pendingThreads.add(t);
-        t.start();
-        return t;
-    }
-
-    /** 单模型测试：只跑该模型一次，不做模型级并发，可被 stopTest 打断。 */
-    public Thread testModelAsync(final RelaySite site, final String model, final Callback callback) {
-        Thread t = new Thread(() -> callback.onResult(testSingleModel(site, model)), "relay-model");
-        pendingThreads.add(t);
-        t.start();
-        return t;
-    }
-
     /** Low-cost probe for background inspection: models endpoint plus one model only. */
     public void healthAsync(final RelaySite site, final Callback callback) {
         new Thread(() -> callback.onResult(health(site)), "relay-health").start();
