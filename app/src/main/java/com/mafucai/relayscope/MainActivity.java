@@ -275,6 +275,8 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface public void stopTest() {
             relayTester.cancelAll();
+            evaluate("window.onNativeTestDone && window.onNativeTestDone(true)");
+            pushState();
             toast("已停止本轮测试");
         }
 
