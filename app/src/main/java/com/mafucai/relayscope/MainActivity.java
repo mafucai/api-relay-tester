@@ -321,6 +321,33 @@ public final class MainActivity extends Activity {
         private String testMode = "full";
         private String testModel = "gpt-5.6-terra";
 
+        @JavascriptInterface public void fetchModelList() {
+            List<RelaySite> sites = siteStore.load();
+            if (sites.isEmpty()) { toast("还没有站点，先添加站点"); return; }
+            toast("正在拉取模型列表…");
+            final int[] remaining = {sites.size()};
+            java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+            for (RelaySite site : sites) {
+                new Thread(() -> {
+                    String err = null;
+                    try {
+                        RelayTester.ModelsResponse resp = relayTester.fetchModels(site);
+                        synchronized (seen) { for (String m : resp.models) seen.add(m); }
+                    } catch (Exception e) { err = site.name + "：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()); }
+                    final String errMsg = err;
+                    runOnUiThread(() -> {
+                        if (errMsg != null) toast("拉取失败 " + errMsg);
+                        if (--remaining[0] == 0) {
+                            JSONArray arr = new JSONArray();
+                            for (String m : seen) arr.put(m);
+                            evaluate("window.onNativeModelList && window.onNativeModelList(" + arr.toString() + ")");
+                            toast(seen.isEmpty() ? "没有拉到任何模型" : "已拉取 " + seen.size() + " 个模型");
+                        }
+                    });
+                }, "fetch-models").start();
+            }
+        }
+
         @JavascriptInterface public void setTestMode(String mode, String model) {
             this.testMode = (mode == null || mode.isEmpty()) ? "full" : mode;
             this.testModel = (model == null || model.trim().isEmpty()) ? "gpt-5.6-terra" : model.trim();

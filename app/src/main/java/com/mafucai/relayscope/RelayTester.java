@@ -154,7 +154,7 @@ public final class RelayTester {
         return b.startsWith("<!doctype") || b.startsWith("<html");
     }
 
-    private ModelsResponse fetchModels(RelaySite site) throws Exception {
+    public ModelsResponse fetchModels(RelaySite site) throws Exception {
         long start = System.nanoTime(); HttpURLConnection connection = open(site.modelsUrl(), site.apiKey, "GET");
         try {
             int code = connection.getResponseCode(); String body = readBody(connection, code);
