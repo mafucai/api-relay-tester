@@ -330,9 +330,20 @@ public final class MainActivity extends Activity {
         private String testMode = "full";
         private String testModel = "gpt-5.6-terra";
 
-        @JavascriptInterface public void fetchModelList() {
-            List<RelaySite> sites = siteStore.load();
-            if (sites.isEmpty()) { toast("还没有站点，先添加站点"); return; }
+        @JavascriptInterface public void fetchModelList(String scope) {
+            final List<RelaySite> all = siteStore.load();
+            if (all.isEmpty()) { toast("还没有站点，先添加站点"); return; }
+            final List<RelaySite> sites;
+            if (scope != null && !scope.trim().isEmpty()) {
+                java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
+                for (String n : scope.split("\\|")) { String t = n.trim(); if (!t.isEmpty()) wanted.add(t); }
+                List<RelaySite> scoped = new java.util.ArrayList<>();
+                for (RelaySite st : all) if (wanted.contains(st.name)) scoped.add(st);
+                if (scoped.isEmpty()) { toast("勾选的站点不存在"); return; }
+                sites = scoped;
+            } else {
+                sites = all;
+            }
             toast("正在拉取模型列表…");
             final java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(sites.size());
             java.util.Set<String> seen = new java.util.LinkedHashSet<>();

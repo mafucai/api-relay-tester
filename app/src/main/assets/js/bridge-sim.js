@@ -14,7 +14,7 @@
     stopTest(){ running=false; delay(()=>window.onNativeTestDone&&window.onNativeTestDone(true)) },
     fetchBalance(){}, fetchPrices(){}, pickPriceImage(){}, saveManualPrice(){},
     startInspection(){}, stopInspection(){}, copyText(t){console.log('[模拟复制]',t)},
-    fetchModelList(){ delay(()=>window.onNativeModelList&&window.onNativeModelList(['gpt-4o','claude-sonnet-4','deepseek-v3'])) },
+    fetchModelList(scope){ const all=['gpt-4o','claude-sonnet-4','deepseek-v3','gpt-5.6-terra']; const list=scope?all.slice(0,2):all; delay(()=>window.onNativeModelList&&window.onNativeModelList(list)); },
     setTestMode(m,model){ console.log('[模拟] 测试模式:',m,model) },
     setTestScope(names){ console.log('[模拟] 测试范围:', names||'全部站点') },
   };
