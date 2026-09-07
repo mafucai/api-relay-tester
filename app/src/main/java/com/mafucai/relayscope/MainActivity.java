@@ -284,12 +284,14 @@ public final class MainActivity extends Activity {
             relayTester.reset();
             List<RelaySite> all = siteStore.load();
             if (all.isEmpty()) { toast("还没有中转站，请先添加第一个站点"); return; }
-            List<RelaySite> sites = all;
+            final List<RelaySite> sites;
             if (testScope != null) {
                 List<RelaySite> scoped = new java.util.ArrayList<>();
                 for (RelaySite st : all) if (testScope.contains(st.name)) scoped.add(st);
                 if (scoped.isEmpty()) { toast("勾选的站点不存在"); return; }
                 sites = scoped;
+            } else {
+                sites = all;
             }
             String mode = this.testMode;
             final boolean single = "single".equals(mode) && !this.testModel.isEmpty();
