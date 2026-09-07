@@ -201,6 +201,6 @@ public final class RelayTester {
     }
     private <T> T withRetry(Callable<T> call)throws Exception{Exception last=null;for(int attempt=0;attempt<=MAX_RETRIES;attempt++){try{return call.call();}catch(TestException e){if(e.status.equals("认证失败")||e.status.equals("接口/模型不存在"))throw e;last=e;}catch(Exception e){last=e;}if(attempt<MAX_RETRIES)try{Thread.sleep(250L*(1L<<attempt));}catch(InterruptedException e){Thread.currentThread().interrupt();throw e;}}throw last;}
     private String safeMessage(Exception e){String m=e.getMessage();return m==null?e.getClass().getSimpleName():m;}
-    private static final class ModelsResponse {final List<String> models;final long ttfbMs;ModelsResponse(List<String> m,long t){models=m;ttfbMs=t;}}
+    public static final class ModelsResponse {final List<String> models;final long ttfbMs;ModelsResponse(List<String> m,long t){models=m;ttfbMs=t;}}
     private static final class TestException extends Exception {final String status;TestException(String s,String m){super(m);status=s;}}
 }
