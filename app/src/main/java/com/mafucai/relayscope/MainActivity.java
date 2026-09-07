@@ -282,8 +282,14 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface public void testAll() {
             relayTester.reset();
-            List<RelaySite> sites = siteStore.load();
-            if (sites.isEmpty()) { toast("还没有中转站，请先添加第一个站点"); return; }
+            List<RelaySite> all = siteStore.load();
+            if (all.isEmpty()) { toast("还没有中转站，请先添加第一个站点"); return; }
+            List<RelaySite> sites = all;
+            if (testScope != null) {
+                sites = new java.util.ArrayList<>();
+                for (RelaySite st : all) if (testScope.contains(st.name)) sites.add(st);
+                if (sites.isEmpty()) { toast("勾选的站点不存在"); return; }
+            }
             String mode = this.testMode;
             final boolean single = "single".equals(mode) && !this.testModel.isEmpty();
             final String chosenModel = this.testModel;
@@ -346,6 +352,15 @@ public final class MainActivity extends Activity {
                     });
                 }, "fetch-models").start();
             }
+        }
+
+        private java.util.Set<String> testScope = null;
+
+        @JavascriptInterface public void setTestScope(String names) {
+            if (names == null || names.trim().isEmpty()) { this.testScope = null; return; }
+            java.util.Set<String> set = new java.util.LinkedHashSet<>();
+            for (String n : names.split("\\|")) { String t = n.trim(); if (!t.isEmpty()) set.add(t); }
+            this.testScope = set.isEmpty() ? null : set;
         }
 
         @JavascriptInterface public void setTestMode(String mode, String model) {
