@@ -325,7 +325,7 @@ public final class MainActivity extends Activity {
             List<RelaySite> sites = siteStore.load();
             if (sites.isEmpty()) { toast("还没有站点，先添加站点"); return; }
             toast("正在拉取模型列表…");
-            final int[] remaining = {sites.size()};
+            final java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(sites.size());
             java.util.Set<String> seen = new java.util.LinkedHashSet<>();
             for (RelaySite site : sites) {
                 new Thread(() -> {
@@ -337,7 +337,7 @@ public final class MainActivity extends Activity {
                     final String errMsg = err;
                     runOnUiThread(() -> {
                         if (errMsg != null) toast("拉取失败 " + errMsg);
-                        if (--remaining[0] == 0) {
+                        if (remaining.decrementAndGet() == 0) {
                             JSONArray arr = new JSONArray();
                             for (String m : seen) arr.put(m);
                             evaluate("window.onNativeModelList && window.onNativeModelList(" + arr.toString() + ")");
