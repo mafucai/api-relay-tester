@@ -16,6 +16,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class RelayTester {
     public interface Callback { void onResult(TestResult result); }
@@ -32,8 +38,55 @@ public final class RelayTester {
     private static final int READ_TIMEOUT = 15000;
     private static final int MAX_RETRIES = 2;
 
+    // 取消机制：pending 线程 + 活动 HTTP 连接集合 + 已停止标记
+    private final List<Thread> pendingThreads = new CopyOnWriteArrayList<>();
+    private final Set<HttpURLConnection> activeConnections = Collections.newSetFromMap(new ConcurrentHashMap<HttpURLConnection, Boolean>());
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+    public static final String CANCELLED_STATUS = "已停止";
+
+    private boolean isCancelled() { return cancelled.get(); }
+    public void cancelAll() {
+        cancelled.set(true);
+        for (HttpURLConnection c : activeConnections) { try { c.disconnect(); } catch (Exception ignored) { } }
+        activeConnections.clear();
+        for (Thread t : pendingThreads) { try { t.interrupt(); } catch (Exception ignored) { } }
+        pendingThreads.clear();
+    }
+    /** 新开始一批测试时清空取消标记。 */
+    public void reset() { cancelled.set(false); }
+
     public void testAsync(final RelaySite site, final String preferredModel, final Callback callback) {
         new Thread(() -> callback.onResult(test(site, preferredModel)), "relay-test").start();
+    }
+
+    /** UI 可中断版本：登记线程，可被 cancelAll() 掐断（巡检 health() 不受影响）。 */
+    public Thread testAsyncCancelable(final RelaySite site, final String preferredModel, final Callback callback) {
+        Thread t = new Thread(() -> callback.onResult(test(site, preferredModel)), "relay-test-cancel");
+        pendingThreads.add(t);
+        t.start();
+        return t;
+    }
+
+    /** 后台巡检用的低成本探针，不参与可以中断的全站测试标记。 */
+    public Thread healthAsync(final RelaySite site, final String preferredModel, final Callback callback) {
+        Thread t = new Thread(() -> callback.onResult(testInternal(site, preferredModel, true)), "relay-health");
+        t.start(); return t;
+    }
+
+    /** 可中断的全站/单站测试（health=false，可被 stopTest 打断）。 */
+    public Thread testAsyncCancelable(final RelaySite site, final String preferredModel, final Callback callback) {
+        Thread t = new Thread(() -> callback.onResult(testInternal(site, preferredModel, false)), "relay-test-cancel");
+        pendingThreads.add(t);
+        t.start();
+        return t;
+    }
+
+    /** 单模型测试：只跑该模型一次，不做模型级并发，可被 stopTest 打断。 */
+    public Thread testModelAsync(final RelaySite site, final String model, final Callback callback) {
+        Thread t = new Thread(() -> callback.onResult(testSingleModel(site, model)), "relay-model");
+        pendingThreads.add(t);
+        t.start();
+        return t;
     }
 
     /** Low-cost probe for background inspection: models endpoint plus one model only. */
@@ -59,12 +112,15 @@ public final class RelayTester {
 
     public TestResult test(RelaySite site, String preferredModel) {
         try {
+            if (isCancelled()) return new TestResult(site.name, CANCELLED_STATUS, "已停止", -1, new ArrayList<>(), new LinkedHashMap<>());
             ModelsResponse response = withRetry(() -> fetchModels(site));
+            if (isCancelled()) return new TestResult(site.name, CANCELLED_STATUS, "已停止", -1, new ArrayList<>(), new LinkedHashMap<>());
             if (response.models.isEmpty()) return new TestResult(site.name, "模型为空", "接口可连通，但没有可用模型", response.ttfbMs, response.models, new LinkedHashMap<>());
             // 模型级并发：线程池 4 路，总耗时≈最慢单模型而不是全部之和
             java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
             Map<String, java.util.concurrent.Future<String>> futures = new LinkedHashMap<>();
             for (String model : response.models) {
+                if (isCancelled()) break;
                 futures.put(model, pool.submit(() -> {
                     try {
                         long streamMs = withRetry(() -> probeChat(site, model));
@@ -130,7 +186,7 @@ public final class RelayTester {
     private static final String BROWSER_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
     private HttpURLConnection open(String address, String key, String method) throws Exception {
-        HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection(); c.setRequestMethod(method); c.setConnectTimeout(CONNECT_TIMEOUT); c.setReadTimeout(READ_TIMEOUT); c.setRequestProperty("Accept","application/json"); c.setRequestProperty("User-Agent", BROWSER_UA); if(key!=null&&!key.isEmpty())c.setRequestProperty("Authorization","Bearer "+key); return c;
+        HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection(); c.setRequestMethod(method); c.setConnectTimeout(CONNECT_TIMEOUT); c.setReadTimeout(READ_TIMEOUT); c.setRequestProperty("Accept","application/json"); c.setRequestProperty("User-Agent", BROWSER_UA); if(key!=null&&!key.isEmpty())c.setRequestProperty("Authorization","Bearer "+key); activeConnections.add(c); return c;
     }
     private String readBody(HttpURLConnection c,int code)throws IOException{InputStream in=code>=400?c.getErrorStream():c.getInputStream();if(in==null)return "";try(BufferedReader r=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8))){StringBuilder b=new StringBuilder();String line;while((line=r.readLine())!=null&&b.length()<12000)b.append(line);return b.toString();}}
     private TestException classify(int code,String body){

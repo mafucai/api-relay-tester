@@ -173,10 +173,11 @@ public final class MainActivity extends Activity {
                 else if (group.equals(s.group)) targets.add(s);
             }
             if (targets.isEmpty()) { toast("该分组下没有站点"); return; }
+            relayTester.reset();
             evaluate("window.onNativeTestStart && window.onNativeTestStart(" + targets.size() + ")");
             final int[] remaining = {targets.size()};
             for (RelaySite site : targets) {
-                relayTester.testAsync(site, "gpt-5.6-terra", result -> {
+                relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
                     noteFailStreak(result.siteName, result.status);
                     results.put(result.siteName, result);
@@ -184,7 +185,7 @@ public final class MainActivity extends Activity {
                     if (--remaining[0] == 0) {
                         evaluate("window.onNativeTestDone && window.onNativeTestDone()");
                         pushState();
-                        toast("分组测试完成：" + (group.isEmpty() ? "未分组" : group));
+                        toast("分组测试完成：" + (group.isEmpty() ? "无分组站点" : group));
                     }
                 });
             }
@@ -196,7 +197,8 @@ public final class MainActivity extends Activity {
             if (target == null) { toast("未找到站点：" + name); return; }
             final RelaySite site = target;
             evaluate("window.onNativeTestStart && window.onNativeTestStart(1)");
-            relayTester.testAsync(site, "gpt-5.6-terra", result -> {
+            relayTester.reset();
+            relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
                 String detail = result.detail == null ? result.status : result.detail;
                 noteFailStreak(result.siteName, result.status);
                 results.put(result.siteName, result);
@@ -271,13 +273,19 @@ public final class MainActivity extends Activity {
             evaluate("window.onNativeState && window.onNativeState(" + sites.toString() + "," + priceStore.exportJson().toString() + "," + resultArray.toString() + "," + balanceArray.toString() + "," + failArray.toString() + "," + rateArray.toString() + ")");
         }
 
+        @JavascriptInterface public void stopTest() {
+            relayTester.cancelAll();
+            toast("已停止本轮测试");
+        }
+
         @JavascriptInterface public void testAll() {
+            relayTester.reset();
             List<RelaySite> sites = siteStore.load();
             if (sites.isEmpty()) { toast("还没有中转站，请先添加第一个站点"); return; }
             evaluate("window.onNativeTestStart && window.onNativeTestStart(" + sites.size() + ")");
             final int[] remaining = {sites.size()};
             for (RelaySite site : sites) {
-                relayTester.testAsync(site, "gpt-5.6-terra", result -> {
+                relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
                     noteFailStreak(result.siteName, result.status);
                     results.put(result.siteName, result);
