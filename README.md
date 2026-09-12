@@ -15,6 +15,7 @@ The approved browser front-end is the single source of truth for the Android UI.
 - screenshot OCR price import with confirmation and re-upload flow for missing fields
 - manual price storage (input/output price + balance multiplier)
 - configurable foreground inspection service; the interval accepts positive decimals
+- per-model realtime progress (8-way concurrency, completion-order reporting, per-model 20s cap, 10-minute batch cap) with a "retry only timed-out models" shortcut (v0.6.3)
 
 The app now has a real network probe for saved sites: `/v1/models`, TTFB, per-model minimal streaming checks, error classification, and bounded retry. Production UI must show real saved-site results or an empty state; the three sample cards belong only to the browser prototype/development fixtures and must not be shipped as production data.
 

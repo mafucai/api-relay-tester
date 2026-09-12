@@ -312,7 +312,7 @@ public final class MainActivity extends Activity {
                         pushState();
                         toast("真实测试完成");
                     }
-                    });
+                    }, (siteName, model, status, completed, total) -> evaluate("window.onNativeModelResult && window.onNativeModelResult(" + js(siteName) + "," + js(model) + "," + js(status) + "," + completed + "," + total + ")"));
                 }
             }
         }

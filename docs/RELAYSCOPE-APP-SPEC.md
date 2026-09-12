@@ -1,7 +1,7 @@
 # RelayScope 应用产品与交互规格
 
 > 版本：v2.0
-> 最后更新：2026-09-07（v0.6.2 / build-36）
+> 最后更新：2026-09-12（v0.6.3 / build-39，逐模型实时进度）
 > 状态：第 2 阶段迭代完成，功能全部经主人真机验证
 > 用途：产品、前端、Android、OCR、视觉审查 AI 的统一上下文。**接手前必读，配套 `docs/ENGINEERING.md`（工程手册）。**
 
@@ -26,26 +26,27 @@ RelayScope 是一个 **API 中转站测速与管理工具**，用于比较多个
 
 不是聊天软件，不是代理服务，不是多用户后台。
 
-## 1.1 前端架构（v0.6.2 起模块化，硬规则）
+## 1.1 前端架构（v0.6.2 起模块化，v0.6.3 增 progress 层，硬规则）
 
 前端是唯一视觉基准，Android 只做 WebView 壳 + 原生桥，**禁止 Java 重画界面**。
 
 ```text
 app/src/main/assets/
-├── index.html            壳：DOM 骨架 + 8 个有序 <script> + css link
+├── index.html            壳：DOM 骨架 + 9 个有序 <script> + css link
 ├── css/app.css           全部样式
 └── js/
     ├── state.js          状态声明（nativeSites/nativeResults…）+ $/toast/esc/isImageModel 工具
-    ├── bridge-sim.js     ★浏览器模拟桥接：无 AndroidRelay 时注入 18 个假方法，浏览器可测全部交互
+    ├── bridge-sim.js     ★浏览器模拟桥接：无 AndroidRelay 时注入假方法，浏览器可测全部交互
     ├── bridge.js         onNativeState 回调 + copyText
     ├── render.js         排行榜 / 模型矩阵 / 价格 / 成本试算 渲染
     ├── group.js          分组对话框 + 添加/编辑站点 modal
     ├── mode.js           测试模式面板（全量/单模型/范围/拉取模型）
+    ├── progress.js       ★v0.6.3 逐模型实时进度：进度条 + 用时/预计剩余 + 重测超时模型
     ├── inspection.js     巡检开关与倒计时
     └── init.js           启动渲染 + 模块就绪自检（控制台 [RelayScope] 模块自检: 全部就绪）
 ```
 
-加载顺序固定：`state → bridge-sim → bridge → render → group → mode → inspection → init`。
+加载顺序固定：`state → bridge-sim → bridge → render → group → mode → progress → inspection → init`。
 
 **模块化硬规则：**
 1. 单文件 JS 超 30KB 必拆；每个元素的事件绑定**只允许存在于一个模块**（`addEventListener` 可叠加，重复注册=事故）
@@ -60,7 +61,21 @@ app/src/main/assets/
 1. **连通性**：请求 `/v1/models`，判断网址与密钥可用；
 2. **首包延迟**：`/v1/models` TTFB；
 3. **流式质量**：最小流式请求记录首 token 时间；
-4. **模型真实可用性**：逐模型最小请求（4 路并发），不把"列表里有"当"真可用"。
+4. **模型真实可用性**：逐模型最小请求（8 路并发，v0.6.3 起），不把"列表里有"当"真可用"。
+
+**超时与进度（v0.6.3 硬规则，专治 200+ 模型站点）**
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 单模型连接超时 | 5 秒 | 连不上就不再等 |
+| 单模型读取超时 | 15 秒 | 首字返回上限 |
+| 单模型总上限 | 20 秒 | 超时即标「超时」，不阻塞整批 |
+| 整批硬上限 | 10 分钟 | 到时未完成项统一标记「超时」 |
+| 并发 | 8 | 模型级并发 |
+| 逐模型重试 | 不重试 | 重试只保留给巡检/单模型入口 |
+| 结果回传 | 完成顺序 | 哪个模型先测完，UI 先显示哪个，不按提交顺序等待 |
+
+进度显示：总览顶部进度块实时显示 `站点 · 模型 → 状态`、`已完成/总数（百分比）`、进度条、`已用时 / 预计剩余`，并统计可用与失败/超时数量。完成后出现「↻ 只重测超时模型（N）」，只重测超时项，不重跑全部 232 个。
 
 错误分类（必须如实显示）：`认证失败 / 接口/模型不存在 / 限流 / 服务端错误 / 网络错误 / 超时 / 流式空响应 / 部分可用 / 网关返回网页`。
 401/403 时透传站点原始 JSON message。
@@ -173,8 +188,9 @@ fetchBalance fetchPrices fetchModelList setTestMode setTestScope saveManualPrice
 pickPriceImage startInspection stopInspection copyText
 ```
 
-原生→前端回调：`onNativeState / onNativeSiteResult / onNativeTestStart / onNativeTestDone(stopped) / onNativeModelList / onNativeOcr* / onNativeSiteCount`。
+原生→前端回调：`onNativeState / onNativeSiteResult / onNativeModelResult / onNativeTestStart / onNativeTestDone(stopped) / onNativeModelList / onNativeOcr* / onNativeSiteCount`。
 **改任何一边，另两边（Java + bridge-sim）必须同步，并跑桥接对齐检查。**
+`onNativeModelResult(siteName, model, status, completed, total)` 为 v0.6.3 新增回调，不走桥接方法清单（无需新增 @JavascriptInterface 方法）。
 
 ### 5.2 Java 固化写法（防编译错，全部踩过坑）
 
@@ -203,14 +219,17 @@ if (remaining.decrementAndGet() == 0) { /* 最后一个 */ }
 输出分级：必须修改 / 建议修改 / 可接受差异。
 不要把「站内余额扣费倍率」误解成官方加价倍数。
 
-## 8. 当前状态（2026-09-07）
+## 8. 当前状态（2026-09-12）
 
 **已实现并经主人真机验证：**
-WebView + 18 桥接四层测速；双模式测试（全量/单模型）；测试范围（全站/指定站）；停止按钮；拉取全部/只拉选中模型；排行榜（分级色/best/连败/成功率/折叠）；模型矩阵（可折叠）；价格三通道；成本试算；巡检（任意小数间隔）；固定签名覆盖安装；前端模块化 + bridge-sim 浏览器调试。
+WebView + 桥接四层测速；双模式测试（全量/单模型）；测试范围（全站/指定站）；停止按钮；拉取全部/只拉选中模型；排行榜（分级色/best/连败/成功率/折叠）；模型矩阵（可折叠）；价格三通道；成本试算；巡检（任意小数间隔）；固定签名覆盖安装；前端模块化 + bridge-sim 浏览器调试。
+
+**v0.6.3 新增（待真机验证）：**
+逐模型实时进度（8 路并发 + 完成队列 + 逐条回传，哪个先完成先显示）；单模型 20 秒上限（连接 5s / 读取 15s）；整批 10 分钟硬上限；逐模型不再重试；总览进度块（进度条 / 已用时 / 预计剩余 / 可用与失败计数）；「只重测超时模型」按钮。
 
 **待验证/后续方向：**
+- v0.6.3 真机验证 232 模型站点：整批是否在 10 分钟内收敛、进度是否逐条刷新
 - 不同中转站价格源格式覆盖
 - OCR 真实截图识别率
 - 厂商后台保活差异
-- 大规模模型测试的成本控制
 - 并发限制探测（已评估：读 RateLimit 响应头零成本 / 主动探测花钱有风控风险，暂缓）

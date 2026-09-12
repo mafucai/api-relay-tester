@@ -1,8 +1,9 @@
 # RelayScope 工程手册（下一个 AI 必读）
 
-> 最后更新：2026-09-07（v0.6.2 / build-36，第 2 阶段完成）
+> 最后更新：2026-09-12（v0.6.3 / build-39，逐模型实时进度与超时上限）
 > 用途：接手本项目的 AI / 人类先读这份。读完即知：技术栈、代码地图、数据位置、构建交付、签名、历史坑。
 > 配套：产品交互规格 `docs/RELAYSCOPE-APP-SPEC.md`（v2.0，功能与视觉以此为准）。
+> 治理：项目根 `PROJECT_RULES.md` / `RISK_CHECKLIST.md` / `ACCEPTANCE.md` / `LOW_MODEL_TASK_TEMPLATE.md`（2026-09-12 补齐）；入口 `bash tools/preflight.sh`。
 
 ## 1. 一句话简介
 
@@ -26,7 +27,10 @@ app/src/main/java/com/mafucai/relayscope/
                           - reset() 每批测试前清标记；testSingleModel 单模型一发
                           - CANCELLED_STATUS="已停止"；巡检走 health() 独立路径不受取消影响
                           - fetchModels 现为 public（MainActivity 复用）；ModelsResponse 为 public static class
-                          - 4 路模型级并发；BROWSER_UA 防 WAF；looksLikeHtml 防 HTML 网关页；classify 错误分类
+                          - v0.6.3：MODEL_WORKERS=8 路并发 + ExecutorCompletionService 完成队列，按完成顺序 emitModel
+                          - v0.6.3：逐模型不重试（MAX_RETRIES 只留给 health/single）；连接 5s/读取 15s
+                          - v0.6.3：MODEL_BATCH_TIMEOUT_MS=10 分钟整批硬上限，超时项标记「超时」
+                          - BROWSER_UA 防 WAF；looksLikeHtml 防 HTML 网关页；classify 错误分类
   SiteStore.java          站点持久化（SharedPreferences "relayscope_sites"）
   SecretBox.java          API Key 加密：Android Keystore AES-GCM，alias "relayscope-site-keys-v1"，密文前缀 "enc1:"
   PriceStore.java         价格持久化（"relayscope_prices"）
@@ -35,12 +39,13 @@ app/src/main/java/com/mafucai/relayscope/
   InspectionService.java  前台巡检服务（dataSync 类型，任意小数分钟；独立 RelayTester 实例）
 
 app/src/main/assets/
-  index.html              壳（DOM + 8 个有序 script）
+  index.html              壳（DOM + 9 个有序 script）
   css/app.css             全部样式
-  js/                     8 模块（state / bridge-sim / bridge / render / group / mode / inspection / init）
-                          详见 RELAYSCOPE-APP-SPEC.md §1.1；bridge-sim.js=浏览器模拟桥接（18 方法）
+  js/                     9 模块（state / bridge-sim / bridge / render / group / mode / progress / inspection / init）
+                          详见 RELAYSCOPE-APP-SPEC.md §1.1；bridge-sim.js=浏览器模拟桥接
+                          progress.js=v0.6.3 逐模型实时进度层（进度条/用时/预计剩余/重测超时）
 
-app/build.gradle          versionCode 20 / versionName '0.6.2' 在这里改
+app/build.gradle          versionCode 21 / versionName '0.6.3' 在这里改
 ```
 
 ## 3. 桥接对齐（三方契约，最高优先级）
@@ -110,6 +115,9 @@ pickPriceImage startInspection stopInspection copyText
 7. **推送纪律**：本地验证 → 主人确认 → 才推。多次违反被主人纠正，不可再犯
 8. **检查脚本会误报**：整行匹配对合法修改误报，定性前必须人工逐条复核
 9. **失败必沉淀**：每个构建失败/功能 bug 写「现象→根因→应对」入本表，不许只修不留痕
+10. **逐模型 must not 按提交顺序 get()**：`for (entry : futures) value.get()` 会让第 1 个慢模型挡住后面 231 个已完成的快模型（232 模型站 15 分钟只出 15 个的根因之一）。应对：`ExecutorCompletionService` 完成队列 + `poll(deadline)`，谁先完成先回调
+11. **逐模型不能带重试**：`withRetry` 对每个模型最多 3 次 ×（8s 连接 + 15s 读取）= 单模型最坏约 69 秒；232 模型在 4 路并发下等于必然超时。应对：批内逐模型零重试 + 连接 5s/读取 15s + 整批 10 分钟硬上限；重试只留给巡检与单模型入口
+12. **无进度 = 无法判断是卡死还是慢**：原实现只在整站结束后回传一次结果。应对：新增 `onNativeModelResult` 逐条回调 + 进度块（已完成/总数、用时、预计剩余、超时计数），并节流重绘（500ms）避免 232 次全量渲染卡 UI
 
 ## 8. 版本历史要点
 
@@ -127,6 +135,8 @@ pickPriceImage startInspection stopInspection copyText
 | build-32 | 排行榜卡片折叠 |
 | build-33~34 | 指定站点测试范围（lambda final 连炸两次，见教训 3/§5.2） |
 | build-35~36 | final 写法固化；只拉选中站点按钮；拉取逐站诊断 toast |
+| build-39 | v0.6.3：逐模型实时进度（8 路并发+完成队列+逐条回传）；单模型 20 秒上限（连接 5s/读取 15s）；整批 10 分钟硬上限；逐模型不重试；只重测超时模型 |
+| build-39 治理 | 补齐治理四件套（PROJECT_RULES/RISK_CHECKLIST/ACCEPTANCE/LOW_MODEL_TASK_TEMPLATE）+ tools/preflight.sh 检查入口 + body 内联调试面板（铁律 2） |
 
 ## 9. 本地开发环境
 

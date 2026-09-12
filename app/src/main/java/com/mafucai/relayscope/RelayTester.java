@@ -20,11 +20,16 @@ import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.net.SocketTimeoutException;
 
 public final class RelayTester {
     public interface Callback { void onResult(TestResult result); }
+    public interface ModelCallback { void onModel(String siteName, String model, String status, int completed, int total); }
     public static final class TestResult {
         public final String siteName, status, detail;
         public final long ttfbMs;
@@ -37,6 +42,10 @@ public final class RelayTester {
     private static final int CONNECT_TIMEOUT = 8000;
     private static final int READ_TIMEOUT = 15000;
     private static final int MAX_RETRIES = 2;
+    private static final int MODEL_WORKERS = 8;
+    private static final long MODEL_BATCH_TIMEOUT_MS = 10 * 60 * 1000L;
+    private static final int MODEL_CONNECT_TIMEOUT = 5000;
+    private static final int MODEL_READ_TIMEOUT = 15000;
 
     // 取消机制：pending 线程 + 活动 HTTP 连接集合 + 已停止标记
     private final List<Thread> pendingThreads = new CopyOnWriteArrayList<>();
@@ -61,7 +70,12 @@ public final class RelayTester {
 
     /** UI 可中断版本：登记线程，可被 cancelAll() 掐断（巡检 health() 不受影响）。 */
     public Thread testAsyncCancelable(final RelaySite site, final String preferredModel, final Callback callback) {
-        Thread t = new Thread(() -> callback.onResult(test(site, preferredModel)), "relay-test-cancel");
+        return testAsyncCancelable(site, preferredModel, callback, null);
+    }
+
+    /** 全量测试 + 逐模型完成回调：哪个模型先测完，UI 就先看到哪个。 */
+    public Thread testAsyncCancelable(final RelaySite site, final String preferredModel, final Callback callback, final ModelCallback modelCallback) {
+        Thread t = new Thread(() -> callback.onResult(test(site, preferredModel, modelCallback)), "relay-test-cancel");
         pendingThreads.add(t);
         t.start();
         return t;
@@ -88,38 +102,77 @@ public final class RelayTester {
         }
     }
 
+    private void emitModel(ModelCallback callback, String siteName, String model, String status, int completed, int total) {
+        if (callback == null) return;
+        try { callback.onModel(siteName, model, status, completed, total); } catch (Exception ignored) { }
+    }
+
     public TestResult test(RelaySite site, String preferredModel) {
+        return test(site, preferredModel, null);
+    }
+
+    private TestResult test(RelaySite site, String preferredModel, ModelCallback modelCallback) {
+        final long batchDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(MODEL_BATCH_TIMEOUT_MS);
         try {
             if (isCancelled()) return new TestResult(site.name, CANCELLED_STATUS, "已停止", -1, new ArrayList<>(), new LinkedHashMap<>());
-            ModelsResponse response = withRetry(() -> fetchModels(site));
+            // 整批硬上限 10 分钟：模型列表也不重试，避免把整批拖长。
+            ModelsResponse response = fetchModels(site);
             if (isCancelled()) return new TestResult(site.name, CANCELLED_STATUS, "已停止", -1, new ArrayList<>(), new LinkedHashMap<>());
             if (response.models.isEmpty()) return new TestResult(site.name, "模型为空", "接口可连通，但没有可用模型", response.ttfbMs, response.models, new LinkedHashMap<>());
-            // 模型级并发：线程池 4 路，总耗时≈最慢单模型而不是全部之和
-            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
-            Map<String, java.util.concurrent.Future<String>> futures = new LinkedHashMap<>();
+            // 8 路并发 + 完成队列：按完成顺序取结果，不让慢模型挡住快模型。
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(MODEL_WORKERS);
+            CompletionService<String> completion = new ExecutorCompletionService<>(pool);
+            Map<Future<String>, String> futures = new LinkedHashMap<>();
             for (String model : response.models) {
                 if (isCancelled()) break;
-                futures.put(model, pool.submit(() -> {
+                Future<String> future = completion.submit(() -> {
                     try {
-                        long streamMs = withRetry(() -> probeChat(site, model));
+                        // 逐模型不重试：失败/超时立刻出结果，避免 232 模型被重试拖垮。
+                        long streamMs = probeChat(site, model);
                         return "可用 · " + streamMs + " ms";
+                    } catch (SocketTimeoutException e) {
+                        return "超时";
                     } catch (TestException e) {
                         return e.status;
                     } catch (Exception e) {
                         return "网络错误";
                     }
-                }));
+                });
+                futures.put(future, model);
             }
             Map<String, String> modelResults = new LinkedHashMap<>();
             int available = 0;
-            for (Map.Entry<String, java.util.concurrent.Future<String>> en : futures.entrySet()) {
-                try { String v = en.getValue().get(); modelResults.put(en.getKey(), v); if (v.startsWith("可用")) available++; }
-                catch (Exception e) { modelResults.put(en.getKey(), "网络错误"); }
+            java.util.Set<String> done = new java.util.HashSet<>();
+            while (done.size() < futures.size() && !isCancelled()) {
+                long remaining = batchDeadline - System.nanoTime();
+                if (remaining <= 0) break;
+                Future<String> future = completion.poll(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(500)), TimeUnit.NANOSECONDS);
+                if (future == null) continue;
+                String model = futures.get(future);
+                String value;
+                try { value = future.get(); }
+                catch (Exception e) { value = "网络错误"; }
+                done.add(model);
+                modelResults.put(model, value);
+                if (value.startsWith("可用")) available++;
+                emitModel(modelCallback, site.name, model, value, done.size(), futures.size());
             }
-            pool.shutdown();
-            String status = available == response.models.size() ? "可用" : available == 0 ? "不可用" : "部分可用";
-            String detail = "首包 " + response.ttfbMs + " ms · 流式模型 " + available + "/" + response.models.size();
+            if (done.size() < futures.size() && !isCancelled()) {
+                // 整批超时：未完成项标记超时并取消，不再无限等。
+                for (Map.Entry<Future<String>, String> entry : futures.entrySet()) {
+                    if (done.contains(entry.getValue())) continue;
+                    entry.getKey().cancel(true);
+                    done.add(entry.getValue());
+                    modelResults.put(entry.getValue(), "超时");
+                    emitModel(modelCallback, site.name, entry.getValue(), "超时", done.size(), futures.size());
+                }
+            }
+            pool.shutdownNow();
+            String status = isCancelled() ? CANCELLED_STATUS : available == response.models.size() ? "可用" : available == 0 ? "不可用" : "部分可用";
+            String detail = isCancelled() ? "已停止" : "首包 " + response.ttfbMs + " ms · 流式模型 " + available + "/" + response.models.size();
             return new TestResult(site.name, status, detail, response.ttfbMs, response.models, modelResults);
+        } catch (SocketTimeoutException e) {
+            return new TestResult(site.name, "超时", "模型列表请求超时（单请求上限 20 秒）", -1, new ArrayList<>(), new LinkedHashMap<>());
         } catch (TestException e) {
             return new TestResult(site.name, e.status, e.getMessage(), -1, new ArrayList<>(), new LinkedHashMap<>());
         } catch (Exception e) {
@@ -166,24 +219,30 @@ public final class RelayTester {
             List<String> models = new ArrayList<>();
             if (data != null) for (int i=0;i<data.length();i++) { String id=data.optJSONObject(i).optString("id"); if (!id.isEmpty()) models.add(id); }
             return new ModelsResponse(models, (System.nanoTime()-start)/1_000_000);
-        } finally { connection.disconnect(); }
+        } finally { activeConnections.remove(connection); connection.disconnect(); }
     }
 
     private long probeChat(RelaySite site, String model) throws Exception {
         JSONObject payload = new JSONObject(); payload.put("model", model); payload.put("stream", true);
         JSONArray messages = new JSONArray(); messages.put(new JSONObject().put("role", "user").put("content", "Reply with one word: OK")); payload.put("messages", messages);
-        long start = System.nanoTime(); HttpURLConnection connection = open(site.chatUrl(), site.apiKey, "POST"); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
+        long start = System.nanoTime(); HttpURLConnection connection = openModel(site.chatUrl(), site.apiKey, "POST"); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
         try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
         int code = connection.getResponseCode();
         if (code < 200 || code >= 300) { String body = readBody(connection, code); if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "对话接口返回了 HTML 而非 JSON：可能被网关/人机验证拦截"); throw classify(code, body); }
         try (InputStream input = connection.getInputStream()) { byte[] buffer = new byte[512]; int count=input.read(buffer); if(count<0) throw new TestException("流式空响应", "服务端没有返回 token"); return (System.nanoTime()-start)/1_000_000; }
-        finally { connection.disconnect(); }
+        finally { activeConnections.remove(connection); connection.disconnect(); }
     }
 
     private static final String BROWSER_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
     private HttpURLConnection open(String address, String key, String method) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL(address).openConnection(); c.setRequestMethod(method); c.setConnectTimeout(CONNECT_TIMEOUT); c.setReadTimeout(READ_TIMEOUT); c.setRequestProperty("Accept","application/json"); c.setRequestProperty("User-Agent", BROWSER_UA); if(key!=null&&!key.isEmpty())c.setRequestProperty("Authorization","Bearer "+key); activeConnections.add(c); return c;
+    }
+    private HttpURLConnection openModel(String address, String key, String method) throws Exception {
+        HttpURLConnection c = open(address, key, method);
+        c.setConnectTimeout(MODEL_CONNECT_TIMEOUT);
+        c.setReadTimeout(MODEL_READ_TIMEOUT);
+        return c;
     }
     private String readBody(HttpURLConnection c,int code)throws IOException{InputStream in=code>=400?c.getErrorStream():c.getInputStream();if(in==null)return "";try(BufferedReader r=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8))){StringBuilder b=new StringBuilder();String line;while((line=r.readLine())!=null&&b.length()<12000)b.append(line);return b.toString();}}
     private TestException classify(int code,String body){
