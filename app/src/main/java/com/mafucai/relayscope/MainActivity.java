@@ -30,6 +30,7 @@ public final class MainActivity extends Activity {
     private WebView webView;
     private SiteStore siteStore;
     private PriceStore priceStore;
+    private TestResultStore resultStore;
     private final RelayTester relayTester = new RelayTester();
     private final Map<String, RelayTester.TestResult> results = new HashMap<>();
     private final Map<String, Double> balances = new HashMap<>();
@@ -41,6 +42,8 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         siteStore = new SiteStore(this);
         priceStore = new PriceStore(this);
+        resultStore = new TestResultStore(this);
+        results.putAll(resultStore.load());
         webView = new WebView(this);
         configureWebView(webView);
         setContentView(webView);
@@ -87,7 +90,7 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface public void removeSite(String name) {
             boolean removed = siteStore.removeByName(name);
-            if (removed) { results.remove(name); pushState(); toast("已删除：" + name); }
+            if (removed) { results.remove(name); resultStore.remove(name); pushState(); toast("已删除：" + name); }
             else toast("未找到站点：" + name);
         }
 
@@ -187,7 +190,7 @@ public final class MainActivity extends Activity {
                         pushState();
                         toast("分组测试完成：" + (group.isEmpty() ? "无分组站点" : group));
                     }
-                });
+                }, (siteName, model, status, completed, total) -> evaluate("window.onNativeModelResult && window.onNativeModelResult(" + js(siteName) + "," + js(model) + "," + js(status) + "," + completed + "," + total + ")"));
             }
         }
 
@@ -206,7 +209,7 @@ public final class MainActivity extends Activity {
                 evaluate("window.onNativeTestDone && window.onNativeTestDone()");
                 pushState();
                 toast("重新测试完成：" + result.siteName);
-            });
+            }, (siteName, model, status, completed, total) -> evaluate("window.onNativeModelResult && window.onNativeModelResult(" + js(siteName) + "," + js(model) + "," + js(status) + "," + completed + "," + total + ")"));
         }
 
         @JavascriptInterface public void syncState() {
@@ -271,8 +274,8 @@ public final class MainActivity extends Activity {
                 } catch (Exception ignored) { }
             }
             evaluate("window.onNativeState && window.onNativeState(" + sites.toString() + "," + priceStore.exportJson().toString() + "," + resultArray.toString() + "," + balanceArray.toString() + "," + failArray.toString() + "," + rateArray.toString() + ")");
+            resultStore.saveAll(results);
         }
-
         @JavascriptInterface public void stopTest() {
             relayTester.cancelAll();
             evaluate("window.onNativeTestDone && window.onNativeTestDone(true)");
@@ -300,7 +303,8 @@ public final class MainActivity extends Activity {
             final int[] remaining = {sites.size()};
             for (RelaySite site : sites) {
                 if (single) {
-                    relayTester.testAsyncCancelable(site, chosenModel, result -> singleResult(result, chosenModel, remaining, sites.size()));
+                    relayTester.testAsyncCancelable(site, chosenModel, result -> singleResult(result, chosenModel, remaining, sites.size()),
+                            (siteName, model, status, completed, total) -> evaluate("window.onNativeModelResult && window.onNativeModelResult(" + js(siteName) + "," + js(model) + "," + js(status) + "," + completed + "," + total + ")"));
                 } else {
                     relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
@@ -319,6 +323,7 @@ public final class MainActivity extends Activity {
 
         private void singleResult(RelayTester.TestResult result, String model, int[] remaining, int total) {
             String detail = result.detail == null ? result.status : result.detail;
+            results.put(result.siteName, result);
             evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
             if (--remaining[0] == 0) {
                 evaluate("window.onNativeTestDone && window.onNativeTestDone()");
