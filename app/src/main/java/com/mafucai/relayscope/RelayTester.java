@@ -227,11 +227,10 @@ public final class RelayTester {
         public final String model, group, provider;
         public final Double successRate, latencyMs, tps;
         public final Long requests, success, failure;
-        public final String status;
-        PerfMetric(String model, String group, String provider, Double successRate, Double latencyMs, Double tps, Long requests, Long success, Long failure, String status) {
+        PerfMetric(String model, String group, String provider, Double successRate, Double latencyMs, Double tps, Long requests, Long success, Long failure) {
             this.model = model; this.group = group; this.provider = provider;
             this.successRate = successRate; this.latencyMs = latencyMs; this.tps = tps;
-            this.requests = requests; this.success = success; this.failure = failure; this.status = status;
+            this.requests = requests; this.success = success; this.failure = failure;
         }
     }
 
