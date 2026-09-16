@@ -1,6 +1,6 @@
 # RelayScope 工程手册（下一个 AI 必读）
 
-> 最后更新：2026-09-12（v0.6.3 / build-39，逐模型实时进度与超时上限）
+> 最后更新：2026-09-16（v0.6.5：perf-metrics 主路径【零调用拿健康度】+ 探活兜底【并发 8→2、Retry-After、抖动、429 停批】+ 额度读取；v0.6.4 修复全站测试按钮卡死等）
 > 用途：接手本项目的 AI / 人类先读这份。读完即知：技术栈、代码地图、数据位置、构建交付、签名、历史坑。
 > 配套：产品交互规格 `docs/RELAYSCOPE-APP-SPEC.md`（v2.0，功能与视觉以此为准）。
 > 治理：项目根 `PROJECT_RULES.md` / `RISK_CHECKLIST.md` / `ACCEPTANCE.md` / `LOW_MODEL_TASK_TEMPLATE.md`（2026-09-12 补齐）；入口 `bash tools/preflight.sh`。
@@ -45,7 +45,7 @@ app/src/main/assets/
                           详见 RELAYSCOPE-APP-SPEC.md §1.1；bridge-sim.js=浏览器模拟桥接
                           progress.js=v0.6.3 逐模型实时进度层（进度条/用时/预计剩余/重测超时）
 
-app/build.gradle          versionCode 21 / versionName '0.6.3' 在这里改
+app/build.gradle          versionCode 23 / versionName '0.6.5' 在这里改
 ```
 
 ## 3. 桥接对齐（三方契约，最高优先级）
@@ -117,6 +117,11 @@ pickPriceImage startInspection stopInspection copyText
 9. **失败必沉淀**：每个构建失败/功能 bug 写「现象→根因→应对」入本表，不许只修不留痕
 10. **逐模型 must not 按提交顺序 get()**：`for (entry : futures) value.get()` 会让第 1 个慢模型挡住后面 231 个已完成的快模型（232 模型站 15 分钟只出 15 个的根因之一）。应对：`ExecutorCompletionService` 完成队列 + `poll(deadline)`，谁先完成先回调
 11. **逐模型不能带重试**：`withRetry` 对每个模型最多 3 次 ×（8s 连接 + 15s 读取）= 单模型最坏约 69 秒；232 模型在 4 路并发下等于必然超时。应对：批内逐模型零重试 + 连接 5s/读取 15s + 整批 10 分钟硬上限；重试只留给巡检与单模型入口
+13. **`int[]` 计数竞态在 `testAll` 里漏修**（v0.6.4 实锤）：教训 4 只在 `fetchModelList` 修过，`testAll` / `testGroup` / `singleResult` 三处仍是 `--remaining[0]`。多站点并发时丢更新 → `onNativeTestDone` 永不触发 → **按钮永久卡在「正在测试… · 点此停止」**，单站点正常、多站点必挂。应对：三处统一 `AtomicInteger.decrementAndGet()`；`results`/`balances`/`failStreak` 三个多线程 Map 一并改 `ConcurrentHashMap`。**同一类 bug 要全局搜一遍，不能只修报警的那一处。**
+14. **前端乐观置 `running` 是隐患**（v0.6.4）：`modeSave` 先置 `dataset.running='1'` 再调 `testAll()`；若 Java 因前置校验提前 `return`（如无站点）而不发任何回调，按钮就卡死。应对：running 只由 `onNativeTestStart` 置位，并加 12 分钟看门狗兜底（整批硬上限 10 分钟）。
+15. **`.copy` 被两个模块重复绑定**：`render.js` 用 `closest('.station')` + `.name.textContent` 取站点名，但 `.name` 里含分组 `<span class="gtag">`，取到的名字带分组名 → `nativeSites.find` 永远找不到 → 复制静默失效；`mode.js` 又用 `onclick=` 覆盖了它，只 toast 不真复制。应对：改用 `data-copy="${esc(s.name)}"` 精确传名，并删除重复绑定。
+16. **探活 232 模型必被限流**（v0.6.5）：逐模型真实请求 × 8 路并发 = 一次打 232 次调用，站点必然 429。**根因是方法选错，不是并发调优能救的。** 应对：主路径改读站点自带的 `/api/perf-metrics/summary`（**1 次请求拿全部模型**，零调用零额度零限流）；探活降级为兜底，并发 8→2 + 请求间 100-300ms 抖动 + 读 `Retry-After` + **遇 429 立即停批**（剩余模型标「已跳过（限流）」，不把限流推得更深）。
+17. **429 原本漏到 else 分支**：`probeChat` 里 `classify()` 虽定义了 429→「限流」，但批处理层没有据此中断，会把剩余模型全部打完。应对：批处理循环检测到「限流」立即 break 并取消在途 Future。
 12. **无进度 = 无法判断是卡死还是慢**：原实现只在整站结束后回传一次结果。应对：新增 `onNativeModelResult` 逐条回调 + 进度块（已完成/总数、用时、预计剩余、超时计数），并节流重绘（500ms）避免 232 次全量渲染卡 UI
 
 ## 8. 版本历史要点
@@ -136,6 +141,8 @@ pickPriceImage startInspection stopInspection copyText
 | build-33~34 | 指定站点测试范围（lambda final 连炸两次，见教训 3/§5.2） |
 | build-35~36 | final 写法固化；只拉选中站点按钮；拉取逐站诊断 toast |
 | build-39 | v0.6.3：逐模型实时进度（8 路并发+完成队列+逐条回传）；单模型 20 秒上限（连接 5s/读取 15s）；整批 10 分钟硬上限；逐模型不重试；只重测超时模型 |
+| **build-41** | **v0.6.5：perf-metrics 主路径（零调用拿健康度）+ 探活兜底（并发 8→2 / Retry-After / 抖动 / 429 停批，教训 16/17）+ 额度读取（/api/user/self）** |
+| **build-40** | **v0.6.4：修复全站测试按钮卡死（int[] 计数竞态，教训 13）+ 前端乐观 running（教训 14）+ 重复 id retryTimeout + 调试面板 `\'` 语法错误（曾使整段内联脚本不执行）+ 卡片多余 `</div>` + 组内排序表达式 + 复制配置（教训 15）** |
 | build-39 治理 | 补齐治理四件套（PROJECT_RULES/RISK_CHECKLIST/ACCEPTANCE/LOW_MODEL_TASK_TEMPLATE）+ tools/preflight.sh 检查入口 + body 内联调试面板（铁律 2） |
 
 ## 9. 本地开发环境

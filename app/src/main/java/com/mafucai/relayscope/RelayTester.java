@@ -42,7 +42,13 @@ public final class RelayTester {
     private static final int CONNECT_TIMEOUT = 8000;
     private static final int READ_TIMEOUT = 15000;
     private static final int MAX_RETRIES = 2;
-    private static final int MODEL_WORKERS = 8;
+    // 兜底探活：并发从 8 降到 2，避免 232 模型一次性打爆站点触发限流
+    private static final int MODEL_WORKERS = 2;
+    // 主路径：站点自带的性能统计（零模型调用、零额度消耗）
+    // 路径统一由 RelaySite.perfMetricsUrl()/quotaUrl()/statusUrl() 提供
+    // 请求间抖动，避免整齐脉冲被限流
+    private static final long JITTER_MIN_MS = 100;
+    private static final long JITTER_MAX_MS = 300;
     private static final long MODEL_BATCH_TIMEOUT_MS = 10 * 60 * 1000L;
     private static final int MODEL_CONNECT_TIMEOUT = 5000;
     private static final int MODEL_READ_TIMEOUT = 15000;
@@ -123,8 +129,12 @@ public final class RelayTester {
             java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(MODEL_WORKERS);
             CompletionService<String> completion = new ExecutorCompletionService<>(pool);
             Map<Future<String>, String> futures = new LinkedHashMap<>();
+            int submitted = 0;
             for (String model : response.models) {
                 if (isCancelled()) break;
+                // 兜底：模型间加 100-300ms 抖动，避免整齐脉冲被站点限流
+                if (submitted > 0) jitterPause();
+                submitted++;
                 Future<String> future = completion.submit(() -> {
                     try {
                         // 逐模型不重试：失败/超时立刻出结果，避免 232 模型被重试拖垮。
@@ -142,6 +152,7 @@ public final class RelayTester {
             }
             Map<String, String> modelResults = new LinkedHashMap<>();
             int available = 0;
+            boolean rateLimited = false;
             java.util.Set<String> done = new java.util.HashSet<>();
             while (done.size() < futures.size() && !isCancelled()) {
                 long remaining = batchDeadline - System.nanoTime();
@@ -156,6 +167,18 @@ public final class RelayTester {
                 modelResults.put(model, value);
                 if (value.startsWith("可用")) available++;
                 emitModel(modelCallback, site.name, model, value, done.size(), futures.size());
+                // 遇 429 立即停批：不再打剩余模型，避免把站点限流推得更深
+                if ("限流".equals(value)) { rateLimited = true; break; }
+            }
+            if (rateLimited) {
+                // 取消尚未完成的探测，剩余模型统一标记为「已跳过（限流）」
+                for (Map.Entry<Future<String>, String> entry : futures.entrySet()) {
+                    if (done.contains(entry.getValue())) continue;
+                    entry.getKey().cancel(true);
+                    done.add(entry.getValue());
+                    modelResults.put(entry.getValue(), "已跳过（限流）");
+                    emitModel(modelCallback, site.name, entry.getValue(), "已跳过（限流）", done.size(), futures.size());
+                }
             }
             if (done.size() < futures.size() && !isCancelled()) {
                 // 整批超时：未完成项标记超时并取消，不再无限等。
@@ -199,6 +222,122 @@ public final class RelayTester {
         }
     }
 
+    /** 站点自带性能统计的一条记录。 */
+    public static final class PerfMetric {
+        public final String model, group, provider;
+        public final Double successRate, latencyMs, tps;
+        public final Long requests, success, failure;
+        public final String status;
+        PerfMetric(String model, String group, String provider, Double successRate, Double latencyMs, Double tps, Long requests, Long success, Long failure, String status) {
+            this.model = model; this.group = group; this.provider = provider;
+            this.successRate = successRate; this.latencyMs = latencyMs; this.tps = tps;
+            this.requests = requests; this.success = success; this.failure = failure; this.status = status;
+        }
+    }
+
+    /**
+     * 主路径：读取站点自带的性能统计（NewAPI /api/perf-metrics/summary）。
+     * 这是站点自己统计的真实流量数据，零模型调用、零额度消耗、不会触发限流。
+     */
+    public java.util.List<PerfMetric> fetchPerfMetrics(RelaySite site) throws Exception {
+        String url = site.perfMetricsUrl();
+        HttpURLConnection connection = open(url, site.apiKey, "GET");
+        try {
+            int code = connection.getResponseCode();
+            String body = readBody(connection, code);
+            if (code < 200 || code >= 300) throw classify(code, body);
+            if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "统计接口返回了 HTML 而非 JSON：可能被网关/人机验证拦截");
+            JSONArray data;
+            try { data = new JSONObject(body).optJSONArray("data"); }
+            catch (JSONException je) { throw new TestException("响应不是 JSON", "统计接口返回了网页而非 JSON"); }
+            java.util.List<PerfMetric> out = new java.util.ArrayList<>();
+            if (data == null) return out;
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject item = data.optJSONObject(i);
+                if (item == null) continue;
+                String model = item.optString("model", item.optString("model_name", item.optString("name", ""))).trim();
+                if (model.isEmpty()) continue;
+                out.add(new PerfMetric(
+                        model,
+                        item.optString("group", item.optString("group_name", item.optString("channel", "default"))),
+                        item.optString("provider", item.optString("supplier", "")),
+                        optDoubleOrNull(item, "success_rate", "successRate"),
+                        optDoubleOrNull(item, "latency", "latency_ms", "avg_latency"),
+                        optDoubleOrNull(item, "tps", "tokens_per_second"),
+                        optLongOrNull(item, "requests", "request_count", "total"),
+                        optLongOrNull(item, "success", "success_count"),
+                        optLongOrNull(item, "failure", "failure_count", "failed")));
+            }
+            return out;
+        } finally { activeConnections.remove(connection); connection.disconnect(); }
+    }
+
+    /** 额度：NewAPI /api/user/self 的 quota / used_quota（内部单位，需按 quota_per_unit 换算）。 */
+    public static final class QuotaResponse {
+        public final double remaining, used, quotaPerUnit, exchangeRate;
+        public final String currencySymbol;
+        QuotaResponse(double remaining, double used, double quotaPerUnit, double exchangeRate, String currencySymbol) {
+            this.remaining = remaining; this.used = used; this.quotaPerUnit = quotaPerUnit;
+            this.exchangeRate = exchangeRate; this.currencySymbol = currencySymbol;
+        }
+    }
+
+    /** 读取账号额度；quota_per_unit 等换算参数取自 /api/status（读不到时用 NewAPI 默认值）。 */
+    public QuotaResponse fetchQuota(RelaySite site) throws Exception {
+        HttpURLConnection connection = open(site.quotaUrl(), site.apiKey, "GET");
+        double quota, used;
+        try {
+            int code = connection.getResponseCode();
+            String body = readBody(connection, code);
+            if (code < 200 || code >= 300) throw classify(code, body);
+            if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "额度接口返回了 HTML 而非 JSON");
+            JSONObject root;
+            try { root = new JSONObject(body); }
+            catch (JSONException je) { throw new TestException("响应不是 JSON", "额度接口返回了网页而非 JSON"); }
+            JSONObject data = root.optJSONObject("data");
+            if (data == null || !data.has("quota")) {
+                // 拿不到就留空，绝不写 0 冒充
+                throw new TestException("无额度字段", "响应中没有 quota 字段");
+            }
+            quota = data.optDouble("quota", -1);
+            used = data.optDouble("used_quota", 0);
+            if (quota < 0) throw new TestException("无额度字段", "quota 不是有效数值");
+        } finally { activeConnections.remove(connection); connection.disconnect(); }
+
+        // 换算参数：/api/status（失败则用 NewAPI 默认 500000 / 1 / $）
+        double perUnit = 500000, rate = 1;
+        String symbol = "$";
+        try {
+            HttpURLConnection statusConn = open(site.statusUrl(), site.apiKey, "GET");
+            try {
+                int sc = statusConn.getResponseCode();
+                String sb = readBody(statusConn, sc);
+                if (sc >= 200 && sc < 300) {
+                    JSONObject sroot = new JSONObject(sb);
+                    JSONObject sdata = sroot.optJSONObject("data");
+                    if (sdata == null) sdata = sroot;
+                    if (sdata.has("quota_per_unit")) { double v = sdata.optDouble("quota_per_unit", 0); if (v > 0) perUnit = v; }
+                    if (sdata.has("custom_currency_exchange_rate")) { double v = sdata.optDouble("custom_currency_exchange_rate", 0); if (v > 0) rate = v; }
+                    String sym = sdata.optString("custom_currency_symbol", "").trim();
+                    if (!sym.isEmpty()) symbol = sym;
+                    if (perUnit <= 0) perUnit = 500000;
+                }
+            } finally { activeConnections.remove(statusConn); statusConn.disconnect(); }
+        } catch (Exception ignored) { /* 换算参数读不到就用默认，不阻断额度展示 */ }
+
+        return new QuotaResponse(quota / perUnit * rate, used / perUnit * rate, perUnit, rate, symbol);
+    }
+
+    private static Double optDoubleOrNull(JSONObject o, String... keys) {
+        for (String k : keys) if (o.has(k) && !o.isNull(k)) { try { return o.getDouble(k); } catch (Exception ignored) { } }
+        return null;
+    }
+
+    private static Long optLongOrNull(JSONObject o, String... keys) {
+        for (String k : keys) if (o.has(k) && !o.isNull(k)) { try { return o.getLong(k); } catch (Exception ignored) { } }
+        return null;
+    }
+
     /** One API 式判断：非 JSON Content-Type 直接判定网关返回网页，不做猜测解析。 */
     private static boolean looksLikeHtml(HttpURLConnection c, String body) {
         String ct = c.getContentType();
@@ -228,7 +367,7 @@ public final class RelayTester {
         long start = System.nanoTime(); HttpURLConnection connection = openModel(site.chatUrl(), site.apiKey, "POST"); connection.setDoOutput(true); connection.setRequestProperty("Content-Type", "application/json");
         try (OutputStream output = connection.getOutputStream()) { output.write(payload.toString().getBytes(StandardCharsets.UTF_8)); }
         int code = connection.getResponseCode();
-        if (code < 200 || code >= 300) { String body = readBody(connection, code); if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "对话接口返回了 HTML 而非 JSON：可能被网关/人机验证拦截"); throw classify(code, body); }
+        if (code < 200 || code >= 300) { String body = readBody(connection, code); if (looksLikeHtml(connection, body)) throw new TestException("网关返回网页", "对话接口返回了 HTML 而非 JSON：可能被网关/人机验证拦截"); TestException classified = classify(code, body); if ("限流".equals(classified.status)) { long wait = retryAfterSeconds(connection); classified = new TestException("限流", wait > 0 ? ("HTTP 429：站点要求 " + wait + " 秒后重试") : "HTTP 429：请求过于频繁（站点已限流）"); } throw classified; }
         try (InputStream input = connection.getInputStream()) { byte[] buffer = new byte[512]; int count=input.read(buffer); if(count<0) throw new TestException("流式空响应", "服务端没有返回 token"); return (System.nanoTime()-start)/1_000_000; }
         finally { activeConnections.remove(connection); connection.disconnect(); }
     }
@@ -245,6 +384,22 @@ public final class RelayTester {
         return c;
     }
     private String readBody(HttpURLConnection c,int code)throws IOException{InputStream in=code>=400?c.getErrorStream():c.getInputStream();if(in==null)return "";try(BufferedReader r=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8))){StringBuilder b=new StringBuilder();String line;while((line=r.readLine())!=null&&b.length()<12000)b.append(line);return b.toString();}}
+    /** 429 时读取 Retry-After（秒），无则返回 -1。 */
+    private long retryAfterSeconds(HttpURLConnection c) {
+        try {
+            String value = c.getHeaderField("Retry-After");
+            if (value == null || value.trim().isEmpty()) return -1;
+            return (long) Math.ceil(Double.parseDouble(value.trim()));
+        } catch (Exception e) { return -1; }
+    }
+
+    /** 批量探活前统一退避，避免整齐脉冲触发站点限流。 */
+    private void jitterPause() {
+        long span = Math.max(0, JITTER_MAX_MS - JITTER_MIN_MS);
+        long wait = JITTER_MIN_MS + (span > 0 ? (long) (Math.random() * span) : 0);
+        try { Thread.sleep(wait); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
     private TestException classify(int code,String body){
         if(code==401||code==403){
             String detail="HTTP "+code+"：密钥无效或无权限";
@@ -254,7 +409,7 @@ public final class RelayTester {
             return new TestException("认证失败", detail);
         }
         if(code==404)return new TestException("接口/模型不存在", "HTTP 404：请检查地址或模型");
-        if(code==429)return new TestException("限流", "HTTP 429：请求过于频繁");
+        if(code==429)return new TestException("限流", "HTTP 429：请求过于频繁（站点已限流）");
         if(code>=500)return new TestException("服务端错误", "HTTP "+code);
         return new TestException("请求失败", "HTTP "+code);
     }

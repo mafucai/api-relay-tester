@@ -32,9 +32,9 @@ public final class MainActivity extends Activity {
     private PriceStore priceStore;
     private TestResultStore resultStore;
     private final RelayTester relayTester = new RelayTester();
-    private final Map<String, RelayTester.TestResult> results = new HashMap<>();
-    private final Map<String, Double> balances = new HashMap<>();
-    private final Map<String, Integer> failStreak = new HashMap<>();
+    private final Map<String, RelayTester.TestResult> results = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Double> balances = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Integer> failStreak = new java.util.concurrent.ConcurrentHashMap<>();
     private final TextRecognizer textRecognizer = TextRecognition.getClient(
             new ChineseTextRecognizerOptions.Builder().build());
 
@@ -178,14 +178,14 @@ public final class MainActivity extends Activity {
             if (targets.isEmpty()) { toast("该分组下没有站点"); return; }
             relayTester.reset();
             evaluate("window.onNativeTestStart && window.onNativeTestStart(" + targets.size() + ")");
-            final int[] remaining = {targets.size()};
+            final java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(targets.size());
             for (RelaySite site : targets) {
                 relayTester.testAsyncCancelable(site, "gpt-5.6-terra", result -> {
                     String detail = result.detail == null ? result.status : result.detail;
                     noteFailStreak(result.siteName, result.status);
                     results.put(result.siteName, result);
                     evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
-                    if (--remaining[0] == 0) {
+                    if (remaining.decrementAndGet() == 0) {
                         evaluate("window.onNativeTestDone && window.onNativeTestDone()");
                         pushState();
                         toast("分组测试完成：" + (group.isEmpty() ? "无分组站点" : group));
@@ -300,7 +300,7 @@ public final class MainActivity extends Activity {
             final boolean single = "single".equals(mode) && !this.testModel.isEmpty();
             final String chosenModel = this.testModel;
             evaluate("window.onNativeTestStart && window.onNativeTestStart(" + sites.size() + ")");
-            final int[] remaining = {sites.size()};
+            final java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(sites.size());
             for (RelaySite site : sites) {
                 if (single) {
                     relayTester.testAsyncCancelable(site, chosenModel, result -> singleResult(result, chosenModel, remaining, sites.size()),
@@ -311,7 +311,7 @@ public final class MainActivity extends Activity {
                     noteFailStreak(result.siteName, result.status);
                     results.put(result.siteName, result);
                     evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
-                    if (--remaining[0] == 0) {
+                    if (remaining.decrementAndGet() == 0) {
                         evaluate("window.onNativeTestDone && window.onNativeTestDone()");
                         pushState();
                         toast("真实测试完成");
@@ -321,11 +321,11 @@ public final class MainActivity extends Activity {
             }
         }
 
-        private void singleResult(RelayTester.TestResult result, String model, int[] remaining, int total) {
+        private void singleResult(RelayTester.TestResult result, String model, java.util.concurrent.atomic.AtomicInteger remaining, int total) {
             String detail = result.detail == null ? result.status : result.detail;
             results.put(result.siteName, result);
             evaluate("window.onNativeSiteResult && window.onNativeSiteResult(" + js(result.siteName) + "," + js(result.status) + "," + js(detail) + "," + result.ttfbMs + "," + modelsJson(result.models) + ")");
-            if (--remaining[0] == 0) {
+            if (remaining.decrementAndGet() == 0) {
                 evaluate("window.onNativeTestDone && window.onNativeTestDone()");
                 pushState();
                 toast("单模型测试完成：" + model);
@@ -334,6 +334,87 @@ public final class MainActivity extends Activity {
 
         private String testMode = "full";
         private String testModel = "gpt-5.6-terra";
+
+        /**
+         * 主路径：读取站点自带性能统计（零模型调用、零额度消耗、不触发限流）。
+         * 回调 onNativePerfMetrics(siteName, jsonArray)。
+         */
+        @JavascriptInterface public void fetchPerfMetrics(String name) {
+            RelaySite target = null;
+            for (RelaySite s : siteStore.load()) if (s.name.equals(name)) { target = s; break; }
+            if (target == null) { toast("未找到站点：" + name); return; }
+            final RelaySite site = target;
+            toast("正在读取站点统计…");
+            new Thread(() -> {
+                String err = null;
+                java.util.List<RelayTester.PerfMetric> list = new java.util.ArrayList<>();
+                try { list = relayTester.fetchPerfMetrics(site); }
+                catch (Exception e) { err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+                final String errMsg = err;
+                final java.util.List<RelayTester.PerfMetric> metrics = list;
+                runOnUiThread(() -> {
+                    if (errMsg != null) {
+                        toast(site.name + " 统计读取失败：" + errMsg);
+                        evaluate("window.onNativePerfMetrics && window.onNativePerfMetrics(" + js(site.name) + ", [], " + js(errMsg) + ")");
+                        return;
+                    }
+                    JSONArray arr = new JSONArray();
+                    for (RelayTester.PerfMetric m : metrics) {
+                        JSONObject o = new JSONObject();
+                        try {
+                            o.put("model", m.model);
+                            o.put("group", m.group);
+                            if (m.provider != null && !m.provider.isEmpty()) o.put("provider", m.provider);
+                            if (m.successRate != null) o.put("successRate", m.successRate);
+                            if (m.latencyMs != null) o.put("latencyMs", m.latencyMs);
+                            if (m.tps != null) o.put("tps", m.tps);
+                            if (m.requests != null) o.put("requests", m.requests);
+                            if (m.success != null) o.put("success", m.success);
+                            if (m.failure != null) o.put("failure", m.failure);
+                            arr.put(o);
+                        } catch (Exception ignored) { }
+                    }
+                    toast(site.name + " 读取到 " + metrics.size() + " 条模型统计（零调用）");
+                    evaluate("window.onNativePerfMetrics && window.onNativePerfMetrics(" + js(site.name) + ", " + arr.toString() + ", null)");
+                });
+            }, "perf-metrics").start();
+        }
+
+        /**
+         * 额度：NewAPI /api/user/self。回调 onNativeQuota(siteName, obj, err)。
+         * 拿不到 quota 字段时返回错误，绝不写 0 冒充。
+         */
+        @JavascriptInterface public void fetchQuota(String name) {
+            RelaySite target = null;
+            for (RelaySite s : siteStore.load()) if (s.name.equals(name)) { target = s; break; }
+            if (target == null) { toast("未找到站点：" + name); return; }
+            final RelaySite site = target;
+            toast("正在读取额度…");
+            new Thread(() -> {
+                String err = null; RelayTester.QuotaResponse q = null;
+                try { q = relayTester.fetchQuota(site); }
+                catch (Exception e) { err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
+                final String errMsg = err; final RelayTester.QuotaResponse quota = q;
+                runOnUiThread(() -> {
+                    if (errMsg != null || quota == null) {
+                        toast(site.name + " 额度读取失败：" + errMsg);
+                        evaluate("window.onNativeQuota && window.onNativeQuota(" + js(site.name) + ", null, " + js(errMsg) + ")");
+                        return;
+                    }
+                    JSONObject o = new JSONObject();
+                    try {
+                        o.put("remaining", quota.remaining);
+                        o.put("used", quota.used);
+                        o.put("symbol", quota.currencySymbol);
+                        o.put("schemaVersion", 1);
+                    } catch (Exception ignored) { }
+                    balances.put(site.name, quota.remaining);
+                    toast(String.format("%s 额度 %s%.4f", site.name, quota.currencySymbol, quota.remaining));
+                    evaluate("window.onNativeQuota && window.onNativeQuota(" + js(site.name) + ", " + o.toString() + ", null)");
+                    pushState();
+                });
+            }, "quota-fetch").start();
+        }
 
         @JavascriptInterface public void fetchModelList(String scope) {
             final List<RelaySite> all = siteStore.load();

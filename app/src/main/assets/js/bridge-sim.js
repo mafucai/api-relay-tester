@@ -15,6 +15,8 @@
     fetchBalance(){}, fetchPrices(){}, pickPriceImage(){}, saveManualPrice(){},
     startInspection(){}, stopInspection(){}, copyText(t){console.log('[模拟复制]',t)},
     fetchModelList(scope){ const all=['gpt-4o','claude-sonnet-4','deepseek-v3','gpt-5.6-terra']; const list=scope?all.slice(0,2):all; delay(()=>window.onNativeModelList&&window.onNativeModelList(list)); },
+    fetchPerfMetrics(n){ delay(()=>window.onNativePerfMetrics&&window.onNativePerfMetrics(n,[{model:'gpt-4o',successRate:0.97,latencyMs:320,requests:1200},{model:'claude-sonnet-4',successRate:0.62,latencyMs:880,requests:400},{model:'deepseek-v3',successRate:0.31,latencyMs:2100,requests:80}],null)) },
+    fetchQuota(n){ delay(()=>window.onNativeQuota&&window.onNativeQuota(n,{remaining:12.3456,used:3.21,symbol:'$',schemaVersion:1},null)) },
     setTestMode(m,model){ console.log('[模拟] 测试模式:',m,model) },
     setTestScope(names){ console.log('[模拟] 测试范围:', names||'全部站点') },
   };

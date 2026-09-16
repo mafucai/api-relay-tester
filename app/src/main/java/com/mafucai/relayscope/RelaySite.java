@@ -39,6 +39,21 @@ public final class RelaySite {
         return joinUrl("/chat/completions");
     }
 
+    /** 站点自带性能统计（NewAPI /api/perf-metrics/summary）。 */
+    public String perfMetricsUrl() {
+        return joinUrl("/api/perf-metrics/summary");
+    }
+
+    /** 账号额度（NewAPI /api/user/self）。 */
+    public String quotaUrl() {
+        return joinUrl("/api/user/self");
+    }
+
+    /** 站点状态与换算参数（/api/status）。 */
+    public String statusUrl() {
+        return joinUrl("/api/status");
+    }
+
     private String joinUrl(String path) {
         String base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         return base + (path.startsWith("/") ? path : "/" + path);
