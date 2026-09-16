@@ -1,6 +1,6 @@
 # RelayScope 工程手册（下一个 AI 必读）
 
-> 最后更新：2026-09-16（v0.6.6：修复 models 字符串/数组类型不一致导致全站测试面板打不开；v0.6.5：perf-metrics 主路径【零调用拿健康度】+ 探活兜底【并发 8→2、Retry-After、抖动、429 停批】+ 额度读取；v0.6.4 修复全站测试按钮卡死等）
+> 最后更新：2026-09-16（v0.6.7：调试面板 window.onerror 真实捕获，解决 file:// 下 'Script error.' 无详情；v0.6.6：修复 models 字符串/数组类型不一致导致全站测试面板打不开；v0.6.5：perf-metrics 主路径【零调用拿健康度】+ 探活兜底【并发 8→2、Retry-After、抖动、429 停批】+ 额度读取；v0.6.4 修复全站测试按钮卡死等）
 > 用途：接手本项目的 AI / 人类先读这份。读完即知：技术栈、代码地图、数据位置、构建交付、签名、历史坑。
 > 配套：产品交互规格 `docs/RELAYSCOPE-APP-SPEC.md`（v2.0，功能与视觉以此为准）。
 > 治理：项目根 `PROJECT_RULES.md` / `RISK_CHECKLIST.md` / `ACCEPTANCE.md` / `LOW_MODEL_TASK_TEMPLATE.md`（2026-09-12 补齐）；入口 `bash tools/preflight.sh`。
@@ -45,7 +45,7 @@ app/src/main/assets/
                           详见 RELAYSCOPE-APP-SPEC.md §1.1；bridge-sim.js=浏览器模拟桥接
                           progress.js=v0.6.3 逐模型实时进度层（进度条/用时/预计剩余/重测超时）
 
-app/build.gradle          versionCode 24 / versionName '0.6.6' 在这里改
+app/build.gradle          versionCode 25 / versionName '0.6.7' 在这里改
 ```
 
 ## 3. 桥接对齐（三方契约，最高优先级）
@@ -126,6 +126,8 @@ pickPriceImage startInspection stopInspection copyText
     - **为什么调试面板只显示 `Script error.` 无详情**：`file://` 下 `js/*.js` 是 opaque origin，WebView 屏蔽跨源错误细节。**排查此类问题必须看 Java 侧真实数据格式，不能只看 JS。**
     - **我为什么没测出来**：上次用**自编的数组数据**测（`models:['gpt-4o']`），与 Java 实际发的**字符串**不符 → 测试数据格式失真 = 等于没测。**教训：集成测试必须用被测方真实产出的数据格式，禁止自编。**
     - 应对：在 `bridge.js` 入口加 `asModelArray()` 统一归一化（数组原样 / JSON 字符串 parse / 裸字符串包成单元素数组），`onNativeState` 与 `onNativeSiteResult` 两处都过一遍。
+19. **WebView 下 `Script error.` 无详情会掩盖真因**（v0.6.7）：`file://` 加载的 `js/*.js` 属 opaque origin，浏览器按同源策略把错误细节全部屏蔽，调试面板只显示 `Script error. @ :`，**看不出任何原因**。应对：调试面板改用 `window.onerror` 五参数版（可拿 stack），并对 `Script error.` 给出可操作提示（提示查 models 类型等）。**排查此类问题必须在本地把外部 JS 内联成 `<script>` 再跑浏览器**，否则错误永远被屏蔽（本次即靠此法定位 `(r.models||[]).forEach is not a function`）。
+20. **导出 APK 前必须解包验证内容**（v0.6.6/0.6.7）：曾把**不含修复**的 build-43 交付出去，用户装上后问题依旧，白耗一轮。应对：交付前 `unzip` 出改动文件，`grep` 确认修复真在包里（如 `grep -c asModelArray assets/js/bridge.js`）。
 12. **无进度 = 无法判断是卡死还是慢**：原实现只在整站结束后回传一次结果。应对：新增 `onNativeModelResult` 逐条回调 + 进度块（已完成/总数、用时、预计剩余、超时计数），并节流重绘（500ms）避免 232 次全量渲染卡 UI
 
 ## 8. 版本历史要点
@@ -145,6 +147,7 @@ pickPriceImage startInspection stopInspection copyText
 | build-33~34 | 指定站点测试范围（lambda final 连炸两次，见教训 3/§5.2） |
 | build-35~36 | final 写法固化；只拉选中站点按钮；拉取逐站诊断 toast |
 | build-39 | v0.6.3：逐模型实时进度（8 路并发+完成队列+逐条回传）；单模型 20 秒上限（连接 5s/读取 15s）；整批 10 分钟硬上限；逐模型不重试；只重测超时模型 |
+| **build-45** | **v0.6.7：调试面板 window.onerror 真实捕获（file:// 下不再只见 'Script error.'）；全链路 20 项审计通过** |
 | **build-44** | **v0.6.6：修复 models 字符串/数组类型不一致（全站测试面板打不开的真正根因，教训 18）** |
 | **build-41** | **v0.6.5：perf-metrics 主路径（零调用拿健康度）+ 探活兜底（并发 8→2 / Retry-After / 抖动 / 429 停批，教训 16/17）+ 额度读取（/api/user/self）** |
 | **build-40** | **v0.6.4：修复全站测试按钮卡死（int[] 计数竞态，教训 13）+ 前端乐观 running（教训 14）+ 重复 id retryTimeout + 调试面板 `\'` 语法错误（曾使整段内联脚本不执行）+ 卡片多余 `</div>` + 组内排序表达式 + 复制配置（教训 15）** |
