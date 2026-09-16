@@ -1,6 +1,6 @@
 # RelayScope 工程手册（下一个 AI 必读）
 
-> 最后更新：2026-09-16（v0.6.5：perf-metrics 主路径【零调用拿健康度】+ 探活兜底【并发 8→2、Retry-After、抖动、429 停批】+ 额度读取；v0.6.4 修复全站测试按钮卡死等）
+> 最后更新：2026-09-16（v0.6.6：修复 models 字符串/数组类型不一致导致全站测试面板打不开；v0.6.5：perf-metrics 主路径【零调用拿健康度】+ 探活兜底【并发 8→2、Retry-After、抖动、429 停批】+ 额度读取；v0.6.4 修复全站测试按钮卡死等）
 > 用途：接手本项目的 AI / 人类先读这份。读完即知：技术栈、代码地图、数据位置、构建交付、签名、历史坑。
 > 配套：产品交互规格 `docs/RELAYSCOPE-APP-SPEC.md`（v2.0，功能与视觉以此为准）。
 > 治理：项目根 `PROJECT_RULES.md` / `RISK_CHECKLIST.md` / `ACCEPTANCE.md` / `LOW_MODEL_TASK_TEMPLATE.md`（2026-09-12 补齐）；入口 `bash tools/preflight.sh`。
@@ -45,7 +45,7 @@ app/src/main/assets/
                           详见 RELAYSCOPE-APP-SPEC.md §1.1；bridge-sim.js=浏览器模拟桥接
                           progress.js=v0.6.3 逐模型实时进度层（进度条/用时/预计剩余/重测超时）
 
-app/build.gradle          versionCode 23 / versionName '0.6.5' 在这里改
+app/build.gradle          versionCode 24 / versionName '0.6.6' 在这里改
 ```
 
 ## 3. 桥接对齐（三方契约，最高优先级）
@@ -122,6 +122,10 @@ pickPriceImage startInspection stopInspection copyText
 15. **`.copy` 被两个模块重复绑定**：`render.js` 用 `closest('.station')` + `.name.textContent` 取站点名，但 `.name` 里含分组 `<span class="gtag">`，取到的名字带分组名 → `nativeSites.find` 永远找不到 → 复制静默失效；`mode.js` 又用 `onclick=` 覆盖了它，只 toast 不真复制。应对：改用 `data-copy="${esc(s.name)}"` 精确传名，并删除重复绑定。
 16. **探活 232 模型必被限流**（v0.6.5）：逐模型真实请求 × 8 路并发 = 一次打 232 次调用，站点必然 429。**根因是方法选错，不是并发调优能救的。** 应对：主路径改读站点自带的 `/api/perf-metrics/summary`（**1 次请求拿全部模型**，零调用零额度零限流）；探活降级为兜底，并发 8→2 + 请求间 100-300ms 抖动 + 读 `Retry-After` + **遇 429 立即停批**（剩余模型标「已跳过（限流）」，不把限流推得更深）。
 17. **429 原本漏到 else 分支**：`probeChat` 里 `classify()` 虽定义了 429→「限流」，但批处理层没有据此中断，会把剩余模型全部打完。应对：批处理循环检测到「限流」立即 break 并取消在途 Future。
+18. **models 类型不一致：Java 传 JSON 字符串，前端当数组用**（v0.6.6 实锤，最严重的一次）。`MainActivity.pushState()` 里 `item.put("models", modelsJson(...))` —— `modelsJson()` 返回 **String**，于是 JSON 里 `models` 是 `'["gpt-4o",...]'` 字符串；而 `mode.js:4` `(r.models||[]).forEach(...)` 按**数组**用 → **抛 `is not a function`** → `openModeModal()` 中断 → **「开始全站测试」面板打不开，看起来像按钮坏了**。
+    - **为什么调试面板只显示 `Script error.` 无详情**：`file://` 下 `js/*.js` 是 opaque origin，WebView 屏蔽跨源错误细节。**排查此类问题必须看 Java 侧真实数据格式，不能只看 JS。**
+    - **我为什么没测出来**：上次用**自编的数组数据**测（`models:['gpt-4o']`），与 Java 实际发的**字符串**不符 → 测试数据格式失真 = 等于没测。**教训：集成测试必须用被测方真实产出的数据格式，禁止自编。**
+    - 应对：在 `bridge.js` 入口加 `asModelArray()` 统一归一化（数组原样 / JSON 字符串 parse / 裸字符串包成单元素数组），`onNativeState` 与 `onNativeSiteResult` 两处都过一遍。
 12. **无进度 = 无法判断是卡死还是慢**：原实现只在整站结束后回传一次结果。应对：新增 `onNativeModelResult` 逐条回调 + 进度块（已完成/总数、用时、预计剩余、超时计数），并节流重绘（500ms）避免 232 次全量渲染卡 UI
 
 ## 8. 版本历史要点
@@ -141,6 +145,7 @@ pickPriceImage startInspection stopInspection copyText
 | build-33~34 | 指定站点测试范围（lambda final 连炸两次，见教训 3/§5.2） |
 | build-35~36 | final 写法固化；只拉选中站点按钮；拉取逐站诊断 toast |
 | build-39 | v0.6.3：逐模型实时进度（8 路并发+完成队列+逐条回传）；单模型 20 秒上限（连接 5s/读取 15s）；整批 10 分钟硬上限；逐模型不重试；只重测超时模型 |
+| **build-44** | **v0.6.6：修复 models 字符串/数组类型不一致（全站测试面板打不开的真正根因，教训 18）** |
 | **build-41** | **v0.6.5：perf-metrics 主路径（零调用拿健康度）+ 探活兜底（并发 8→2 / Retry-After / 抖动 / 429 停批，教训 16/17）+ 额度读取（/api/user/self）** |
 | **build-40** | **v0.6.4：修复全站测试按钮卡死（int[] 计数竞态，教训 13）+ 前端乐观 running（教训 14）+ 重复 id retryTimeout + 调试面板 `\'` 语法错误（曾使整段内联脚本不执行）+ 卡片多余 `</div>` + 组内排序表达式 + 复制配置（教训 15）** |
 | build-39 治理 | 补齐治理四件套（PROJECT_RULES/RISK_CHECKLIST/ACCEPTANCE/LOW_MODEL_TASK_TEMPLATE）+ tools/preflight.sh 检查入口 + body 内联调试面板（铁律 2） |
