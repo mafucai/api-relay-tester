@@ -19,3 +19,6 @@ local.properties
 # Agent working backups
 *.bak.*
 *.bak-*
+
+# 交付产物（APK 由 CI Release 提供，不入库）
+output/
